@@ -13,7 +13,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, make_response, render_template, request, send_from_directory, session, redirect, url_for
 
-from converter import convert_pipeline
+from converter import convert_pipeline, run_ocr_step
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24).hex())
@@ -196,6 +196,16 @@ def run_conversion_job(job_id, acsm_path, output_dir):
                 job["steps"].append({"step": "done", "message": message})
                 job["status"] = "done"
                 job["done_message"] = message
+            elif step == "ocr_prompt":
+                # Pause — let user decide whether to run OCR
+                parts = message.split("|")
+                job["ocr_pdf_path"] = parts[0]
+                job["ocr_pages"] = parts[1]
+                job["status"] = "pending_ocr"
+                job["current_step"] = 7
+                job["current_label"] = "Waiting for your decision..."
+                print(f"[DEBUG] Job {job_id} paused for OCR decision", flush=True)
+                return  # stop the pipeline here
             else:
                 step_num = int(step)
                 is_warning = (
@@ -219,6 +229,39 @@ def run_conversion_job(job_id, acsm_path, output_dir):
         print(f"[DEBUG] Job {job_id} Exception: {e}\n{traceback.format_exc()}", flush=True)
         job["status"] = "error"
         job["error"] = f"Unexpected error: {e}"
+
+
+def run_ocr_job(job_id):
+    """Run OCR step in a background thread after user confirms."""
+    import traceback
+    job = active_jobs[job_id]
+    pdf_path = job["ocr_pdf_path"]
+    pages = [int(p) for p in job["ocr_pages"].split(",")]
+
+    print(f"[DEBUG] Job {job_id} OCR started: pdf={pdf_path}, pages={len(pages)}", flush=True)
+    try:
+        job["status"] = "running"
+        job["current_step"] = 7
+        job["current_label"] = STEP_LABELS[7]
+
+        for step, message in run_ocr_step(pdf_path, pages):
+            print(f"[DEBUG] Job {job_id} OCR step={step} message={message}", flush=True)
+            if step == "done":
+                job["steps"].append({"step": "done", "message": message})
+                job["status"] = "done"
+                job["done_message"] = message
+            else:
+                step_num = int(step)
+                is_warning = "failed" in message.lower() or "could not" in message.lower()
+                job["steps"].append({
+                    "step": step_num,
+                    "message": message,
+                    "warning": is_warning,
+                })
+    except Exception as e:
+        print(f"[DEBUG] Job {job_id} OCR Exception: {e}\n{traceback.format_exc()}", flush=True)
+        job["status"] = "error"
+        job["error"] = f"OCR error: {e}"
 
 
 @app.route("/")
@@ -264,6 +307,8 @@ def start_convert(filename):
         "error": None,
         "done_message": None,
         "start_time": time.time(),
+        "ocr_pdf_path": None,
+        "ocr_pages": None,
     }
 
     t = threading.Thread(
@@ -286,7 +331,7 @@ def job_status(job_id):
     job = active_jobs[job_id]
     elapsed = round(time.time() - job["start_time"])
 
-    return jsonify({
+    resp_data = {
         "status": job["status"],
         "steps": job["steps"],
         "current_step": job["current_step"],
@@ -294,7 +339,60 @@ def job_status(job_id):
         "error": job["error"],
         "done_message": job["done_message"],
         "elapsed": elapsed,
-    })
+    }
+
+    # Include OCR info when waiting for user decision
+    if job["status"] == "pending_ocr":
+        pdf_path = job.get("ocr_pdf_path", "")
+        pages_str = job.get("ocr_pages", "")
+        page_count = len(pages_str.split(",")) if pages_str else 0
+        resp_data["ocr_info"] = {
+            "filename": Path(pdf_path).name if pdf_path else "",
+            "page_count": page_count,
+        }
+
+    return jsonify(resp_data)
+
+
+@app.route("/ocr-decision/<job_id>", methods=["POST"])
+@login_required
+def ocr_decision(job_id):
+    """User decides whether to run OCR or skip."""
+    if job_id not in active_jobs:
+        return jsonify({"error": "Job not found"}), 404
+
+    job = active_jobs[job_id]
+    if job["status"] != "pending_ocr":
+        return jsonify({"error": "Job is not waiting for OCR decision"}), 400
+
+    data = request.get_json(silent=True) or {}
+    choice = data.get("choice", "skip")
+
+    if choice == "ocr":
+        # Run OCR in background thread
+        t = threading.Thread(
+            target=run_ocr_job,
+            args=(job_id,),
+            daemon=True,
+        )
+        t.start()
+        return jsonify({"status": "ocr_started"})
+
+    else:
+        # Skip OCR — mark as done with current file
+        pdf_path = Path(job.get("ocr_pdf_path", ""))
+        size_mb = pdf_path.stat().st_size / (1024 * 1024) if pdf_path.exists() else 0
+        done_msg = f"{pdf_path.name}|{size_mb:.1f} MB"
+
+        job["steps"].append({
+            "step": 7,
+            "message": "OCR skipped by user -- PDF downloaded as image-only.",
+            "warning": False,
+        })
+        job["steps"].append({"step": "done", "message": done_msg})
+        job["status"] = "done"
+        job["done_message"] = done_msg
+        return jsonify({"status": "skipped"})
 
 
 @app.route("/download/<filename>")

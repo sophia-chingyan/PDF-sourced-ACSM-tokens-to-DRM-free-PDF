@@ -1102,60 +1102,26 @@ def convert_pipeline(acsm_path, output_dir):
         if pdf_result.probably_image_only:
             yield (6, (
                 f"PDF scan: 0/{pdf_result.total_pages} pages have extractable text. "
-                f"Image-only PDF detected -- will run OCR to add text layer."
+                f"Image-only PDF detected."
             ))
+            # Pause pipeline — let caller decide whether to OCR
+            img_pages = list(range(1, pdf_result.total_pages + 1))
+            yield ("ocr_prompt", f"{output_file}|{','.join(str(p) for p in img_pages)}")
+
         elif pdf_result.needs_ocr:
             img_count = len(pdf_result.pages_image_only)
             yield (6, (
                 f"PDF scan: {pdf_result.pages_with_text}/{pdf_result.total_pages} pages "
-                f"have text, {img_count} page(s) are image-only -- will OCR those pages."
+                f"have text, {img_count} page(s) are image-only."
             ))
+            # Pause pipeline — let caller decide whether to OCR
+            yield ("ocr_prompt", f"{output_file}|{','.join(str(p) for p in pdf_result.pages_image_only)}")
+
         else:
             yield (6, (
                 f"PDF verified: {pdf_result.pages_with_text}/{pdf_result.total_pages} pages "
-                f"have readable, selectable text -- all OK. No OCR needed."
+                f"have readable, selectable text -- all OK."
             ))
-
-        # Step 7: OCR (if needed)
-        if pdf_result.needs_ocr or pdf_result.probably_image_only:
-            print("Running OCR to add text layer...")
-            ocr_output = output_dir / f"{stem}_ocr.pdf"
-            try:
-                ocr_result = run_ocr(
-                    input_pdf=output_file,
-                    output_pdf=ocr_output,
-                    language="auto",
-                    dpi=150,
-                    pages_to_ocr=pdf_result.pages_image_only or None,
-                )
-                if ocr_result["status"] == "already_has_text":
-                    yield (7, (
-                        f"OCR skipped -- all pages already have a text layer. "
-                        f"Language: {ocr_result['lang_label']}"
-                    ))
-                else:
-                    output_file.unlink()
-                    ocr_output.rename(output_file)
-                    still_img = ocr_result.get("pages_still_image", 0)
-                    text_pages = ocr_result.get("pages_with_text", 0)
-                    total = ocr_result.get("pages_total", 0)
-                    if still_img > 0:
-                        yield (7, (
-                            f"OCR complete ({ocr_result['lang_label']}): "
-                            f"{text_pages}/{total} pages now have text. "
-                            f"{still_img} page(s) could not be OCR'd."
-                        ))
-                    else:
-                        yield (7, (
-                            f"OCR complete ({ocr_result['lang_label']}): "
-                            f"all {total} pages now have readable, searchable text."
-                        ))
-            except RuntimeError as e:
-                if ocr_output.exists():
-                    ocr_output.unlink()
-                yield (7, f"OCR failed: {e}. PDF available without text layer.")
-        else:
-            yield (7, "OCR not needed -- PDF is already fully readable.")
 
     else:
         # EPUB link verification
@@ -1187,12 +1153,84 @@ def convert_pipeline(acsm_path, output_dir):
     yield ("done", f"{output_file.name}|{size_mb:.1f} MB")
 
 
+def run_ocr_step(output_file, pages_image_only):
+    """Run OCR as a standalone step (called when user chooses to OCR).
+
+    Yields (step, message) tuples for step 7.
+    Args:
+        output_file: Path to the DRM-free PDF
+        pages_image_only: list of 1-based page numbers that need OCR
+    """
+    output_file = Path(output_file)
+    output_dir = output_file.parent
+    stem = output_file.stem
+
+    print("Running OCR to add text layer...")
+    ocr_output = output_dir / f"{stem}_ocr.pdf"
+    try:
+        ocr_result = run_ocr(
+            input_pdf=output_file,
+            output_pdf=ocr_output,
+            language="auto",
+            dpi=150,
+            pages_to_ocr=pages_image_only or None,
+        )
+        if ocr_result["status"] == "already_has_text":
+            yield (7, (
+                f"OCR skipped -- all pages already have a text layer. "
+                f"Language: {ocr_result['lang_label']}"
+            ))
+        else:
+            output_file.unlink()
+            ocr_output.rename(output_file)
+            still_img = ocr_result.get("pages_still_image", 0)
+            text_pages = ocr_result.get("pages_with_text", 0)
+            total = ocr_result.get("pages_total", 0)
+            if still_img > 0:
+                yield (7, (
+                    f"OCR complete ({ocr_result['lang_label']}): "
+                    f"{text_pages}/{total} pages now have text. "
+                    f"{still_img} page(s) could not be OCR'd."
+                ))
+            else:
+                yield (7, (
+                    f"OCR complete ({ocr_result['lang_label']}): "
+                    f"all {total} pages now have readable, searchable text."
+                ))
+    except RuntimeError as e:
+        if ocr_output.exists():
+            ocr_output.unlink()
+        yield (7, f"OCR failed: {e}. PDF available without text layer.")
+
+    # Done
+    size_mb = output_file.stat().st_size / (1024 * 1024) if output_file.exists() else 0
+    yield ("done", f"{output_file.name}|{size_mb:.1f} MB")
+
+
 def do_convert(acsm_file, output_dir):
     try:
         for step, message in convert_pipeline(acsm_file, output_dir):
             if step == "done":
                 parts = message.split("|")
                 print(f"\n=== Done! ===\nFile: {parts[0]} ({parts[1]})")
+            elif step == "ocr_prompt":
+                # CLI mode: ask user
+                parts = message.split("|")
+                pdf_path = parts[0]
+                pages = [int(p) for p in parts[1].split(",")]
+                answer = input(f"\n{len(pages)} page(s) need OCR. Run OCR? [Y/n]: ").strip().lower()
+                if answer in ("", "y", "yes"):
+                    for s, m in run_ocr_step(pdf_path, pages):
+                        if s == "done":
+                            p = m.split("|")
+                            print(f"\n=== Done! ===\nFile: {p[0]} ({p[1]})")
+                        else:
+                            print(f"\n=== Step {s}: {m} ===")
+                else:
+                    print("\n=== OCR skipped. PDF downloaded as image-only. ===")
+                    pdf = Path(pdf_path)
+                    size_mb = pdf.stat().st_size / (1024 * 1024)
+                    print(f"File: {pdf.name} ({size_mb:.1f} MB)")
             else:
                 print(f"\n=== Step {step}: {message} ===")
     except RuntimeError as e:
