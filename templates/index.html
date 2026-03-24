@@ -92,14 +92,8 @@
             font-weight: 600;
             letter-spacing: 0.03em;
         }
-        .file-badge-epub {
-            background: #e8f5e9;
-            color: #2e7d32;
-        }
-        .file-badge-pdf {
-            background: #fce4ec;
-            color: #c62828;
-        }
+        .file-badge-epub { background: #e8f5e9; color: #2e7d32; }
+        .file-badge-pdf  { background: #fce4ec; color: #c62828; }
         .file-size { color: #78909c; font-size: 0.85rem; }
         .btn-dl {
             display: inline-block;
@@ -120,7 +114,7 @@
         .step[data-status="active"] { font-weight: bold; }
         .step[data-status="done"]::before   { content: "✓ "; color: #2e7d32; }
         .step[data-status="warning"]::before { content: "⚠ "; color: #e65100; }
-        .step[data-status="error"]::before  { content: "✗ "; color: #c62828; }
+        .step[data-status="error"]::before   { content: "✗ "; color: #c62828; }
         .step[data-status="warning"] { color: #bf360c; }
         .step[data-status="error"]   { color: #c62828; }
         .step[data-status="active"]::before {
@@ -140,14 +134,47 @@
             color: #78909c;
             margin-left: 0.5rem;
         }
-        #confirm-section, #progress-section, #done-section { display: none; }
-        #confirm-section, #progress-section, #done-section {
+
+        #confirm-section, #progress-section, #done-section, #ocr-choice-section { display: none; }
+        #confirm-section, #progress-section, #done-section, #ocr-choice-section {
             background: #fff;
             border-radius: 12px;
             padding: 1.5rem;
             box-shadow: 0 2px 8px rgba(0,0,0,0.08);
             margin-bottom: 2rem;
         }
+
+        .ocr-choice-buttons {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .btn-ocr-yes, .btn-ocr-no {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: none;
+            flex: 1;
+            justify-content: center;
+        }
+        .btn-ocr-yes {
+            background: var(--accent);
+            color: #fff;
+        }
+        .btn-ocr-yes:hover { background: var(--accent-hover); }
+        .btn-ocr-no {
+            background: transparent;
+            color: #546e7a;
+            border: 1.5px solid #cfd8dc;
+        }
+        .btn-ocr-no:hover { border-color: #90a4ae; color: #37474f; }
+
         .done-title { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.4rem; }
         .done-title h3 { margin: 0; color: #2e7d32; }
         .done-subtitle { color: #546e7a; margin-bottom: 1rem; font-size: 0.95rem; }
@@ -223,7 +250,7 @@
         <section id="confirm-section">
             <h3>Ready to Convert</h3>
             <p>File: <span class="confirm-filename" id="confirm-filename"></span></p>
-            <p>This will download the ebook, remove DRM, verify readability, and run OCR if needed.</p>
+            <p>This will download the ebook, remove DRM, and verify readability.</p>
             <div class="confirm-buttons">
                 <button id="confirm-cancel" class="secondary outline">Cancel</button>
                 <button id="confirm-start">Start Conversion</button>
@@ -235,6 +262,24 @@
             <h3>Converting: <span id="converting-name"></span></h3>
             <progress id="progress-bar" value="0" max="7" style="margin-bottom:1rem"></progress>
             <div id="steps"></div>
+        </section>
+
+        <!-- OCR Choice -->
+        <section id="ocr-choice-section">
+            <h3>PDF Contains Image-Only Pages</h3>
+            <p id="ocr-choice-desc"></p>
+            <p style="color:#546e7a; font-size:0.9rem; margin-bottom:1.25rem;">
+                <strong>Run OCR</strong> adds an invisible text layer so you can search, select, and copy text.<br>
+                <strong>Skip OCR</strong> downloads the PDF as-is (images only, no selectable text).
+            </p>
+            <div class="ocr-choice-buttons">
+                <button id="btn-run-ocr" class="btn-ocr-yes" onclick="ocrDecision('ocr')">
+                    <span style="font-size:1.1rem">&#128269;</span> Run OCR (make text searchable)
+                </button>
+                <button id="btn-skip-ocr" class="btn-ocr-no" onclick="ocrDecision('skip')">
+                    <span style="font-size:1.1rem">&#128230;</span> Skip OCR &amp; Download as-is
+                </button>
+            </div>
         </section>
 
         <!-- Done -->
@@ -289,25 +334,28 @@
     <script>
         const TOTAL_STEPS = 7;
 
-        const fileInput       = document.getElementById('file-input');
-        const uploadSection   = document.getElementById('upload-section');
-        const confirmSection  = document.getElementById('confirm-section');
-        const confirmFilename = document.getElementById('confirm-filename');
-        const confirmStart    = document.getElementById('confirm-start');
-        const confirmCancel   = document.getElementById('confirm-cancel');
-        const progressSection = document.getElementById('progress-section');
-        const stepsDiv        = document.getElementById('steps');
-        const progressBar     = document.getElementById('progress-bar');
-        const convertingName  = document.getElementById('converting-name');
-        const doneSection     = document.getElementById('done-section');
-        const doneSubtitle    = document.getElementById('done-subtitle');
-        const doneIcon        = document.getElementById('done-icon');
-        const doneHeading     = document.getElementById('done-heading');
-        const btnDlFile       = document.getElementById('btn-dl-file');
-        const linkWarningBox  = document.getElementById('link-warning-box');
-        const linkWarningText = document.getElementById('link-warning-text');
+        const fileInput        = document.getElementById('file-input');
+        const uploadSection    = document.getElementById('upload-section');
+        const confirmSection   = document.getElementById('confirm-section');
+        const confirmFilename  = document.getElementById('confirm-filename');
+        const confirmStart     = document.getElementById('confirm-start');
+        const confirmCancel    = document.getElementById('confirm-cancel');
+        const progressSection  = document.getElementById('progress-section');
+        const stepsDiv         = document.getElementById('steps');
+        const progressBar      = document.getElementById('progress-bar');
+        const convertingName   = document.getElementById('converting-name');
+        const ocrChoiceSection = document.getElementById('ocr-choice-section');
+        const ocrChoiceDesc    = document.getElementById('ocr-choice-desc');
+        const doneSection      = document.getElementById('done-section');
+        const doneSubtitle     = document.getElementById('done-subtitle');
+        const doneIcon         = document.getElementById('done-icon');
+        const doneHeading      = document.getElementById('done-heading');
+        const btnDlFile        = document.getElementById('btn-dl-file');
+        const linkWarningBox   = document.getElementById('link-warning-box');
+        const linkWarningText  = document.getElementById('link-warning-text');
 
         let pendingFilename = null;
+        let activeJobId = null;
         let elapsedTimer = null;
         let stepStartTime = null;
         const stepDivs = {};
@@ -331,8 +379,10 @@
             doneSection.style.display = 'none';
             progressSection.style.display = 'none';
             confirmSection.style.display = 'none';
+            ocrChoiceSection.style.display = 'none';
             uploadSection.style.display = 'block';
             pendingFilename = null;
+            activeJobId = null;
             fileInput.value = '';
             stepsDiv.innerHTML = '';
             linkWarningBox.style.display = 'none';
@@ -383,13 +433,17 @@
                 }
                 if (data.error) { alert(data.error); return; }
                 jobId = data.job_id;
+                activeJobId = jobId;
             } catch (err) {
                 alert('Failed to start conversion: ' + err.message);
                 return;
             }
 
             showActiveStep(1, 'Checking tools...');
+            startPolling(jobId);
+        }
 
+        function startPolling(jobId) {
             const poller = setInterval(async () => {
                 try {
                     const resp = await fetch('/job-status/' + encodeURIComponent(jobId));
@@ -397,85 +451,46 @@
                     let data;
                     try { data = JSON.parse(text); } catch(e) { return; }
 
+                    // Render completed steps
                     for (let i = lastRenderedSteps; i < data.steps.length; i++) {
                         const s = data.steps[i];
 
                         if (s.step === 'done') {
-                            Object.values(stepDivs).forEach(d => {
-                                if (d.dataset.status === 'active') {
-                                    d.dataset.status = 'done';
-                                    const el = d.querySelector('.elapsed');
-                                    if (el) el.remove();
-                                }
-                            });
+                            finalizeActiveSpinners();
                             stopElapsedTimer();
                             progressBar.value = TOTAL_STEPS;
                             clearInterval(poller);
-
-                            const parts = s.message.split('|');
-                            const outputFilename = parts[0];
-                            const fileSize = parts[1] || '';
-                            const isPDF = outputFilename.toLowerCase().endsWith('.pdf');
-
-                            setTimeout(() => {
-                                progressSection.style.display = 'none';
-                                doneSubtitle.textContent = outputFilename + ' (' + fileSize + ')';
-                                btnDlFile.href = '/download/' + encodeURIComponent(outputFilename);
-                                btnDlFile.textContent = '⬇ Download ' + (isPDF ? 'PDF' : 'EPUB');
-
-                                if (hadWarning) {
-                                    doneIcon.textContent = '⚠️';
-                                    doneHeading.textContent = 'Conversion Complete (with warnings)';
-                                    doneHeading.style.color = '#e65100';
-                                    linkWarningBox.style.display = 'block';
-                                } else {
-                                    doneIcon.textContent = '✅';
-                                    doneHeading.textContent = 'Conversion Complete!';
-                                    doneHeading.style.color = '#2e7d32';
-                                    linkWarningBox.style.display = 'none';
-                                }
-                                doneSection.style.display = 'block';
-                            }, 800);
+                            showDone(s.message);
                             return;
-
                         } else {
-                            const stepNum = s.step;
-                            const isWarning = s.warning === true;
-                            if (isWarning) hadWarning = true;
-
-                            const finalStatus = isWarning ? 'warning' : 'done';
-
-                            if (stepDivs[stepNum]) {
-                                stopElapsedTimer();
-                                const div = stepDivs[stepNum];
-                                div.dataset.status = finalStatus;
-                                const el = div.querySelector('.elapsed');
-                                if (el) el.remove();
-                                div.childNodes[0].textContent = 'Step ' + stepNum + '/' + TOTAL_STEPS + ': ' + s.message;
-                            } else {
-                                const div = document.createElement('div');
-                                div.className = 'step';
-                                div.dataset.status = finalStatus;
-                                div.textContent = 'Step ' + stepNum + '/' + TOTAL_STEPS + ': ' + s.message;
-                                stepDivs[stepNum] = div;
-                                stepsDiv.appendChild(div);
-                            }
-
-                            if (isWarning) {
-                                linkWarningText.textContent = s.message + ' ';
-                            }
-
-                            progressBar.value = stepNum;
+                            renderCompletedStep(s);
                         }
                     }
                     lastRenderedSteps = data.steps.length;
 
+                    // Show active spinner for current step
                     if (data.status === 'running' && data.current_step > 0) {
                         if (!stepDivs[data.current_step]) {
                             showActiveStep(data.current_step, data.current_label);
                         }
                     }
 
+                    // OCR decision needed — pause polling, show choice UI
+                    if (data.status === 'pending_ocr') {
+                        finalizeActiveSpinners();
+                        stopElapsedTimer();
+                        progressBar.value = 6;
+                        clearInterval(poller);
+
+                        const info = data.ocr_info || {};
+                        ocrChoiceDesc.textContent =
+                            info.page_count + ' page(s) are image-only and have no selectable text.';
+                        progressSection.style.display = 'none';
+                        ocrChoiceSection.style.display = 'block';
+                        return;
+                    }
+
+                    // Error
                     if (data.status === 'error') {
                         Object.values(stepDivs).forEach(d => {
                             if (d.dataset.status === 'active') {
@@ -493,6 +508,111 @@
                     // network error — keep polling
                 }
             }, 2000);
+        }
+
+        async function ocrDecision(choice) {
+            if (!activeJobId) return;
+
+            // Disable buttons to prevent double-click
+            document.getElementById('btn-run-ocr').disabled = true;
+            document.getElementById('btn-skip-ocr').disabled = true;
+
+            try {
+                const resp = await fetch('/ocr-decision/' + encodeURIComponent(activeJobId), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ choice: choice }),
+                });
+                const data = await resp.json();
+                if (data.error) { alert(data.error); return; }
+            } catch (err) {
+                alert('Request failed: ' + err.message);
+                document.getElementById('btn-run-ocr').disabled = false;
+                document.getElementById('btn-skip-ocr').disabled = false;
+                return;
+            }
+
+            // Hide choice, show progress again
+            ocrChoiceSection.style.display = 'none';
+            progressSection.style.display = 'block';
+
+            if (choice === 'ocr') {
+                showActiveStep(7, 'Running OCR...');
+            }
+
+            // Re-enable buttons for next time
+            document.getElementById('btn-run-ocr').disabled = false;
+            document.getElementById('btn-skip-ocr').disabled = false;
+
+            // Resume polling
+            startPolling(activeJobId);
+        }
+
+        function renderCompletedStep(s) {
+            const stepNum = s.step;
+            const isWarning = s.warning === true;
+            if (isWarning) hadWarning = true;
+
+            const finalStatus = isWarning ? 'warning' : 'done';
+
+            if (stepDivs[stepNum]) {
+                stopElapsedTimer();
+                const div = stepDivs[stepNum];
+                div.dataset.status = finalStatus;
+                const el = div.querySelector('.elapsed');
+                if (el) el.remove();
+                div.childNodes[0].textContent = 'Step ' + stepNum + '/' + TOTAL_STEPS + ': ' + s.message;
+            } else {
+                const div = document.createElement('div');
+                div.className = 'step';
+                div.dataset.status = finalStatus;
+                div.textContent = 'Step ' + stepNum + '/' + TOTAL_STEPS + ': ' + s.message;
+                stepDivs[stepNum] = div;
+                stepsDiv.appendChild(div);
+            }
+
+            if (isWarning) {
+                linkWarningText.textContent = s.message + ' ';
+            }
+
+            progressBar.value = stepNum;
+        }
+
+        function finalizeActiveSpinners() {
+            Object.values(stepDivs).forEach(d => {
+                if (d.dataset.status === 'active') {
+                    d.dataset.status = 'done';
+                    const el = d.querySelector('.elapsed');
+                    if (el) el.remove();
+                }
+            });
+        }
+
+        function showDone(message) {
+            const parts = message.split('|');
+            const outputFilename = parts[0];
+            const fileSize = parts[1] || '';
+            const isPDF = outputFilename.toLowerCase().endsWith('.pdf');
+
+            setTimeout(() => {
+                progressSection.style.display = 'none';
+                doneSubtitle.textContent = outputFilename + ' (' + fileSize + ')';
+                btnDlFile.href = '/download/' + encodeURIComponent(outputFilename);
+                btnDlFile.textContent = '⬇ Download ' + (isPDF ? 'PDF' : 'EPUB');
+
+                if (hadWarning) {
+                    doneIcon.textContent = '⚠️';
+                    doneHeading.textContent = 'Conversion Complete (with warnings)';
+                    doneHeading.style.color = '#e65100';
+                    linkWarningBox.style.display = 'block';
+                } else {
+                    doneIcon.textContent = '✅';
+                    doneHeading.textContent = 'Conversion Complete!';
+                    doneHeading.style.color = '#2e7d32';
+                    linkWarningBox.style.display = 'none';
+                }
+                doneSection.style.display = 'block';
+            }, 800);
         }
 
         function showActiveStep(stepNum, label) {
