@@ -569,7 +569,7 @@ def _compress_page_ranges(pages: list[int]) -> str:
 
 
 def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
-            dpi: int = 300, pages_to_ocr: list[int] | None = None) -> dict:
+            dpi: int = 150, pages_to_ocr: list[int] | None = None) -> dict:
     """Run OCR on a PDF to add a searchable text layer.
 
     CRITICAL DESIGN: preserve original PDF structure, images, and links.
@@ -1125,7 +1125,7 @@ def convert_pipeline(acsm_path, output_dir):
                     input_pdf=output_file,
                     output_pdf=ocr_output,
                     language="auto",
-                    dpi=300,
+                    dpi=150,
                     pages_to_ocr=pdf_result.pages_image_only or None,
                 )
                 if ocr_result["status"] == "already_has_text":
