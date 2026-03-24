@@ -204,7 +204,7 @@
     <header class="hero">
         <div class="container">
             <h1>ACSM Converter</h1>
-            <p>Convert ACSM tokens to DRM-free EPUB or PDF</p>
+            <p>Convert ACSM tokens to DRM-free EPUB or PDF — with automatic OCR for scanned pages</p>
         </div>
     </header>
 
@@ -223,7 +223,7 @@
         <section id="confirm-section">
             <h3>Ready to Convert</h3>
             <p>File: <span class="confirm-filename" id="confirm-filename"></span></p>
-            <p>This will download the ebook, remove DRM, and verify the output.</p>
+            <p>This will download the ebook, remove DRM, verify readability, and run OCR if needed.</p>
             <div class="confirm-buttons">
                 <button id="confirm-cancel" class="secondary outline">Cancel</button>
                 <button id="confirm-start">Start Conversion</button>
@@ -233,7 +233,7 @@
         <!-- Progress -->
         <section id="progress-section">
             <h3>Converting: <span id="converting-name"></span></h3>
-            <progress id="progress-bar" value="0" max="6" style="margin-bottom:1rem"></progress>
+            <progress id="progress-bar" value="0" max="7" style="margin-bottom:1rem"></progress>
             <div id="steps"></div>
         </section>
 
@@ -287,7 +287,7 @@
     </main>
 
     <script>
-        const TOTAL_STEPS = 6;
+        const TOTAL_STEPS = 7;
 
         const fileInput       = document.getElementById('file-input');
         const uploadSection   = document.getElementById('upload-section');
