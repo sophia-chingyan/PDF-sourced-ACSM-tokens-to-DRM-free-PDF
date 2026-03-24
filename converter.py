@@ -3,10 +3,14 @@
 ACSM to EPUB/PDF Converter
 
 Converts Adobe ACSM ebook tokens to DRM-free EPUB or PDF files
-for personal offline reading.
+for personal offline reading.  When the PDF is image-only (scanned),
+an OCR step automatically adds a searchable text layer (English,
+Traditional Chinese & Simplified Chinese).
 
 Prerequisites (installed automatically by setup):
     brew install pugixml libzip openssl curl cmake
+    brew install tesseract tesseract-lang   # for OCR
+    pip install ocrmypdf PyMuPDF pypdf
     libgourou (built from source)
 
 Usage:
@@ -49,15 +53,13 @@ def find_tool(name):
     return None
 
 
-# ─── Setup ───────────────────────────────────────────────────────────────
+# --- Setup ----------------------------------------------------------------
 
 
 def setup_brew_deps():
-    """Install build dependencies via Homebrew."""
     if not shutil.which("brew"):
         print("Homebrew is required. Install from https://brew.sh")
         sys.exit(1)
-
     deps = ["pugixml", "libzip", "openssl", "curl", "cmake"]
     print(f"Installing build dependencies: {', '.join(deps)}")
     result = run(["brew", "install"] + deps)
@@ -68,7 +70,6 @@ def setup_brew_deps():
 
 
 def _get_brew_prefixes():
-    """Get Homebrew prefix paths for dependencies."""
     prefixes = {}
     for dep in ["pugixml", "libzip", "openssl", "curl"]:
         r = run(["brew", "--prefix", dep])
@@ -77,18 +78,12 @@ def _get_brew_prefixes():
 
 
 def _patch_makefiles(brew_prefixes):
-    """Patch libgourou Makefiles for macOS compatibility."""
     include_flags = " ".join(f"-I{p}/include" for p in brew_prefixes.values())
     lib_flags = " ".join(f"-L{p}/lib" for p in brew_prefixes.values())
-
     root_mk = LIBGOUROU_DIR / "Makefile"
     content = root_mk.read_text()
-    content = content.replace(
-        "$(AR) rcs --thin $@ $^",
-        "libtool -static -o $@ $^",
-    )
+    content = content.replace("$(AR) rcs --thin $@ $^", "libtool -static -o $@ $^")
     root_mk.write_text(content)
-
     utils_mk = LIBGOUROU_DIR / "utils" / "Makefile"
     content = utils_mk.read_text()
     content = content.replace(
@@ -103,50 +98,37 @@ def _patch_makefiles(brew_prefixes):
 
 
 def build_libgourou():
-    """Clone and build libgourou from source."""
     if (LIBGOUROU_BIN / "acsmdownloader").exists():
         print("[OK] libgourou already built.")
         return
-
     repo_url = "https://forge.soutade.fr/soutade/libgourou.git"
-
     if not LIBGOUROU_DIR.exists():
         print("Cloning libgourou...")
         result = run(["git", "clone", "--recurse-submodules", repo_url, str(LIBGOUROU_DIR)])
         if result.returncode != 0:
             print(f"Clone failed:\n{result.stderr}")
             sys.exit(1)
-
     brew_prefixes = _get_brew_prefixes()
     include_flags = " ".join(f"-I{p}/include" for p in brew_prefixes.values())
-
     print("Patching Makefiles for macOS...")
     _patch_makefiles(brew_prefixes)
-
     print("Building libgourou...")
     env = os.environ.copy()
     env["CXXFLAGS"] = include_flags
-
     result = run(
         ["make", "BUILD_UTILS=1", "BUILD_STATIC=1", "BUILD_SHARED=0"],
-        cwd=str(LIBGOUROU_DIR),
-        env=env,
+        cwd=str(LIBGOUROU_DIR), env=env,
     )
     if result.returncode != 0:
         print(f"Build failed:\n{result.stdout}\n{result.stderr}")
-        print("\nTry installing missing deps: brew install pugixml libzip openssl curl")
         sys.exit(1)
-
     if not (LIBGOUROU_BIN / "acsmdownloader").exists():
         print("Build completed but binaries not found.")
-        print(f"Check {LIBGOUROU_BIN} for build output.")
         sys.exit(1)
-
     print("[OK] libgourou built successfully.")
 
 
 def do_setup():
-    """Run full first-time setup."""
     print("=== Setting up ACSM Converter ===\n")
     setup_brew_deps()
     print()
@@ -156,38 +138,30 @@ def do_setup():
     print("  python3 converter.py ebook.acsm")
 
 
-# ─── Conversion ──────────────────────────────────────────────────────────
+# --- Conversion -----------------------------------------------------------
 
 
 def detect_format(acsm_path):
-    """Parse the ACSM file and detect whether it points to EPUB or PDF."""
     tree = ET.parse(acsm_path)
     root = tree.getroot()
     ns = {"adept": "http://ns.adobe.com/adept"}
-
     src_elem = root.find(".//adept:src", ns)
     if src_elem is not None and src_elem.text:
         src = src_elem.text.lower()
         if ".pdf" in src or "output=pdf" in src:
             return "pdf"
-
-    # Also check metadata format element
     fmt_elem = root.find(".//adept:metadata/adept:format", ns)
     if fmt_elem is not None and fmt_elem.text:
         if "pdf" in fmt_elem.text.lower():
             return "pdf"
-
-    # Default to EPUB (most common case)
     return "epub"
 
 
 def register_device():
-    """Register an Adobe device (one-time setup)."""
     device_file = ADEPT_DIR / "device.xml"
     if device_file.exists():
         print("[OK] Adobe device already registered.")
         return
-
     print("Registering Adobe device (anonymous)...")
     tool = find_tool("adept_activate")
     try:
@@ -196,31 +170,26 @@ def register_device():
         raise RuntimeError("Device registration timed out (30s).")
     if result.returncode != 0:
         raise RuntimeError(f"Device registration failed: {result.stdout}\n{result.stderr}")
-
     print("[OK] Adobe device registered.")
 
 
 def fulfill_acsm(acsm_path, output_path):
-    """Download the DRM-protected file by fulfilling the ACSM token."""
     print(f"Fulfilling ACSM: {acsm_path.name}")
     tool = find_tool("acsmdownloader")
     try:
         result = run([tool, "-f", str(acsm_path), "-o", str(output_path)], timeout=120)
     except subprocess.TimeoutExpired:
-        raise RuntimeError("Download timed out (120s). The ACSM token may be expired or the server is unreachable.")
+        raise RuntimeError("Download timed out (120s).")
     if result.returncode != 0:
         stderr = result.stderr or result.stdout or ""
-        raise RuntimeError(f"ACSM download failed (exit code {result.returncode}): {stderr[:500]}")
-
+        raise RuntimeError(f"ACSM download failed (exit {result.returncode}): {stderr[:500]}")
     if not output_path.exists():
-        raise RuntimeError(f"Download completed but output file not found. stdout: {result.stdout[:200]}")
-
+        raise RuntimeError("Download completed but output file not found.")
     size_kb = output_path.stat().st_size / 1024
     print(f"[OK] Downloaded: {output_path.name} ({size_kb:.0f} KB)")
 
 
 def remove_drm(input_path, output_path):
-    """Remove DRM from the downloaded file (EPUB or PDF)."""
     print(f"Removing DRM: {input_path.name}")
     tool = find_tool("adept_remove")
     try:
@@ -229,16 +198,13 @@ def remove_drm(input_path, output_path):
         raise RuntimeError("DRM removal timed out (60s).")
     if result.returncode != 0:
         raise RuntimeError(f"DRM removal failed: {(result.stderr or result.stdout)[:300]}")
-
     print(f"[OK] DRM removed: {output_path.name}")
 
 
-# ─── PDF Verification ─────────────────────────────────────────────────────
+# --- PDF Verification -----------------------------------------------------
 
 
 class PDFCheckResult:
-    """Holds the outcome of a PDF readability audit."""
-
     def __init__(self):
         self.total_pages: int = 0
         self.pages_with_text: int = 0
@@ -246,19 +212,18 @@ class PDFCheckResult:
         self.sample_text: str = ""
         self.warnings: list[str] = []
         self.encrypted: bool = False
-        self.has_fonts: bool = False  # True if any page has embedded fonts
+        self.has_fonts: bool = False
 
     @property
     def has_errors(self) -> bool:
-        # Only flag as error if encrypted. If no text was extracted but fonts
-        # exist, the text is likely readable (CJK encoding issue).
-        # If no text AND no fonts AND pages exist, it's probably image-only,
-        # but we still only warn — don't block the download.
         return self.encrypted
 
     @property
+    def needs_ocr(self) -> bool:
+        return len(self.pages_image_only) > 0
+
+    @property
     def probably_image_only(self) -> bool:
-        """True if the PDF appears to be image-only (no text, no fonts)."""
         return (
             self.total_pages > 0
             and self.pages_with_text == 0
@@ -279,11 +244,11 @@ class PDFCheckResult:
             f"Text ratio     : {self.text_ratio:.0%}",
         ]
         if self.encrypted:
-            lines.append("⚠ PDF is still encrypted!")
+            lines.append("! PDF is still encrypted!")
         if self.pages_image_only:
             pages_str = ", ".join(str(p) for p in self.pages_image_only[:10])
             if len(self.pages_image_only) > 10:
-                pages_str += f" … and {len(self.pages_image_only) - 10} more"
+                pages_str += f" ... and {len(self.pages_image_only) - 10} more"
             lines.append(f"Image-only pages: {pages_str}")
         if self.warnings:
             lines.append("Warnings:")
@@ -293,82 +258,61 @@ class PDFCheckResult:
 
 
 def _extract_text_pymupdf(pdf_path: Path, result: PDFCheckResult) -> bool:
-    """Try text extraction with PyMuPDF (fitz). Returns True if successful."""
     try:
         import fitz
     except ImportError:
         return False
-
     try:
         doc = fitz.open(str(pdf_path))
     except Exception as e:
         result.warnings.append(f"PyMuPDF cannot open PDF: {e}")
         return False
-
     if doc.is_encrypted:
         result.encrypted = True
         result.warnings.append("PDF is still encrypted after DRM removal.")
         doc.close()
-        return True  # Handled, even though encrypted
-
+        return True
     result.total_pages = len(doc)
     result.has_fonts = False
-
     for i, page in enumerate(doc):
         try:
             text = page.get_text("text") or ""
             clean = text.strip()
-
-            # Check if the page has embedded fonts (strong signal of real text,
-            # even if extraction returns garbled results for some encodings)
             fonts = page.get_fonts()
             if fonts:
                 result.has_fonts = True
-
-            # Consider a page "has text" if it has at least 5 non-whitespace
-            # chars. Lower threshold than before because CJK characters carry
-            # more information per character than Latin scripts.
             if len(clean) >= 5:
                 result.pages_with_text += 1
                 if not result.sample_text and len(clean) > 10:
                     result.sample_text = clean[:200]
             else:
-                # Page has no extractable text, but if it has fonts embedded,
-                # it may still be readable (font encoding issue, not image-only)
                 if fonts:
-                    # Give benefit of the doubt — fonts present means text exists
                     result.pages_with_text += 1
                     if not result.sample_text:
-                        result.sample_text = "(text present but not extractable — fonts embedded)"
+                        result.sample_text = "(text present but not extractable -- fonts embedded)"
                 else:
                     result.pages_image_only.append(i + 1)
         except Exception:
             result.pages_image_only.append(i + 1)
-
     doc.close()
     return True
 
 
 def _extract_text_pypdf(pdf_path: Path, result: PDFCheckResult) -> bool:
-    """Fallback text extraction with pypdf. Returns True if successful."""
     try:
         from pypdf import PdfReader
     except ImportError:
         return False
-
     try:
         reader = PdfReader(pdf_path)
     except Exception as e:
         result.warnings.append(f"pypdf cannot open PDF: {e}")
         return False
-
     if reader.is_encrypted:
         result.encrypted = True
         result.warnings.append("PDF is still encrypted after DRM removal.")
         return True
-
     result.total_pages = len(reader.pages)
-
     for i, page in enumerate(reader.pages):
         try:
             text = page.extract_text() or ""
@@ -381,69 +325,244 @@ def _extract_text_pypdf(pdf_path: Path, result: PDFCheckResult) -> bool:
                 result.pages_image_only.append(i + 1)
         except Exception:
             result.pages_image_only.append(i + 1)
-
     return True
 
 
 def verify_pdf_readability(pdf_path: Path) -> PDFCheckResult:
-    """
-    Open a DRM-free PDF and verify that its pages contain extractable text
-    (not just scanned images).
-
-    Uses PyMuPDF (fitz) as the primary engine because it handles CJK
-    (Chinese/Japanese/Korean) fonts and encodings far better than pypdf.
-    Falls back to pypdf if PyMuPDF is unavailable.
-
-    Checks:
-    1. PDF is not encrypted / password-protected
-    2. Each page has extractable text content OR embedded fonts
-    3. Reports pages that appear to be image-only (no text layer, no fonts)
-    """
     result = PDFCheckResult()
-
     if not pdf_path.exists():
         result.warnings.append(f"PDF file not found: {pdf_path}")
         return result
-
-    # Try PyMuPDF first (much better CJK support), then pypdf as fallback
     if not _extract_text_pymupdf(pdf_path, result):
         if not _extract_text_pypdf(pdf_path, result):
             result.warnings.append(
-                "Neither PyMuPDF nor pypdf is installed — skipping text verification"
+                "Neither PyMuPDF nor pypdf is installed -- skipping text verification"
             )
-
     return result
 
 
-# ─── Link Verification (EPUB) ─────────────────────────────────────────────
+# --- OCR Engine -----------------------------------------------------------
 
+_TRA_CHARS = "國學數與對這經區體發聯當會從點問機關個義處應實來將過還後給讓說時種為開黨對質開裡類"
+_SIM_CHARS = "国学数与对这经区体发联当会从点问机关个义处应实来将过还后给让说时种为开党对质开里类"
 
-# HTML/XHTML attributes that carry links
-_LINK_ATTRS = {
-    "a":          ["href"],
-    "area":       ["href"],
-    "link":       ["href"],
-    "script":     ["src"],
-    "img":        ["src", "srcset"],
-    "image":      ["href", "{http://www.w3.org/1999/xlink}href"],
-    "use":        ["href", "{http://www.w3.org/1999/xlink}href"],
-    "video":      ["src", "poster"],
-    "audio":      ["src"],
-    "source":     ["src", "srcset"],
-    "track":      ["src"],
-    "iframe":     ["src"],
-    "object":     ["data"],
-    "embed":      ["src"],
-    "blockquote": ["cite"],
-    "q":          ["cite"],
-    "ins":        ["cite"],
-    "del":        ["cite"],
+LANG_LABELS = {
+    "eng": "English",
+    "chi_tra": "Traditional Chinese",
+    "chi_sim": "Simplified Chinese",
+    "chi_tra+chi_sim": "Chinese (mixed)",
+    "chi_tra+chi_sim+eng": "All (Chinese + English)",
+    "eng+chi_tra": "English + Trad. Chinese",
+    "eng+chi_sim": "English + Simp. Chinese",
 }
 
+
+def detect_language_from_text(text: str) -> str:
+    """Detect language from sample text (mirrors ScanLens logic)."""
+    if not text or len(text.strip()) < 5:
+        return "chi_tra+chi_sim+eng"
+    cjk_count = eng_count = tra_indicators = sim_indicators = 0
+    for ch in text:
+        code = ord(ch)
+        if 0x4E00 <= code <= 0x9FFF:
+            cjk_count += 1
+            if ch in _TRA_CHARS:
+                tra_indicators += 1
+            if ch in _SIM_CHARS:
+                sim_indicators += 1
+        elif (0x41 <= code <= 0x5A) or (0x61 <= code <= 0x7A):
+            eng_count += 1
+    total = cjk_count + eng_count
+    if total == 0:
+        return "chi_tra+chi_sim+eng"
+    if cjk_count / total > 0.3:
+        if tra_indicators > sim_indicators * 1.5:
+            return "chi_tra"
+        if sim_indicators > tra_indicators * 1.5:
+            return "chi_sim"
+        return "chi_tra+chi_sim"
+    if cjk_count > 0:
+        if tra_indicators > sim_indicators:
+            return "eng+chi_tra"
+        if sim_indicators > tra_indicators:
+            return "eng+chi_sim"
+        return "chi_tra+chi_sim+eng"
+    return "eng"
+
+
+def detect_language_from_pdf(pdf_path: Path) -> str:
+    """Quick-scan PDF to detect language for OCR."""
+    # Try existing extracted text first
+    check = PDFCheckResult()
+    _extract_text_pymupdf(pdf_path, check)
+    if check.sample_text and not check.sample_text.startswith("("):
+        detected = detect_language_from_text(check.sample_text)
+        if detected != "chi_tra+chi_sim+eng":
+            return detected
+
+    # Render first page and run quick Tesseract detection
+    try:
+        import fitz
+        import tempfile
+        doc = fitz.open(str(pdf_path))
+        if len(doc) == 0:
+            doc.close()
+            return "chi_tra+chi_sim+eng"
+        page = doc[0]
+        mat = fitz.Matrix(150 / 72, 150 / 72)
+        pix = page.get_pixmap(matrix=mat)
+        img_bytes = pix.tobytes("png")
+        doc.close()
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp.write(img_bytes)
+            tmp_path = tmp.name
+        try:
+            r = run(["tesseract", tmp_path, "stdout",
+                      "-l", "eng+chi_tra+chi_sim", "--psm", "3"], timeout=30)
+            if r.returncode == 0 and r.stdout:
+                return detect_language_from_text(r.stdout)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    return "chi_tra+chi_sim+eng"
+
+
+def _check_tesseract_languages():
+    try:
+        r = run(["tesseract", "--list-langs"], timeout=10)
+        if r.returncode == 0:
+            langs = set()
+            for line in (r.stdout or "").splitlines():
+                line = line.strip()
+                if line and not line.startswith("List"):
+                    langs.add(line)
+            return langs
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return set()
+
+
+def _filter_ocr_languages(requested: str) -> str:
+    available = _check_tesseract_languages()
+    if not available:
+        return requested
+    parts = requested.split("+")
+    valid = [p for p in parts if p in available]
+    if not valid:
+        if "eng" in available:
+            return "eng"
+        return requested
+    return "+".join(valid)
+
+
+def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
+            dpi: int = 300, enhance: bool = True) -> dict:
+    """Run OCR on a PDF to add a searchable text layer.
+
+    Uses ocrmypdf which:
+    - Adds invisible text overlay on existing page images
+    - Preserves original layout and images
+    - Skips pages that already have text (--skip-text)
+    - Supports English + Chinese (Traditional & Simplified)
+    """
+    try:
+        import ocrmypdf
+    except ImportError:
+        raise RuntimeError(
+            "ocrmypdf is not installed. Run: pip install ocrmypdf\n"
+            "Also ensure tesseract is installed with Chinese language packs."
+        )
+
+    if language == "auto":
+        print("  Auto-detecting language...")
+        language = detect_language_from_pdf(input_pdf)
+
+    language = _filter_ocr_languages(language)
+    lang_label = LANG_LABELS.get(language, language)
+    print(f"  OCR language: {lang_label} ({language})")
+
+    ocr_kwargs = {
+        "input_file": str(input_pdf),
+        "output_file": str(output_pdf),
+        "language": language,
+        "deskew": enhance,
+        "skip_text": True,
+        "optimize": 1,
+        "image_dpi": dpi,
+        "progress_bar": False,
+        "jobs": min(os.cpu_count() or 1, 4),
+    }
+    if enhance:
+        ocr_kwargs["clean"] = True
+
+    try:
+        exit_code = ocrmypdf.ocr(**ocr_kwargs)
+    except ocrmypdf.exceptions.PriorOcrFoundError:
+        print("  All pages already have OCR text -- no processing needed")
+        if input_pdf != output_pdf:
+            shutil.copy2(input_pdf, output_pdf)
+        return {
+            "status": "already_has_text",
+            "language": language,
+            "lang_label": lang_label,
+            "pages_ocrd": 0,
+        }
+    except ocrmypdf.exceptions.MissingDependencyError as e:
+        raise RuntimeError(
+            f"OCR dependency missing: {e}\n"
+            "Ensure tesseract and language packs are installed:\n"
+            "  apt-get install tesseract-ocr tesseract-ocr-eng "
+            "tesseract-ocr-chi-tra tesseract-ocr-chi-sim"
+        )
+    except Exception as e:
+        raise RuntimeError(f"OCR processing failed: {e}")
+
+    if exit_code != 0 and exit_code != ocrmypdf.ExitCode.already_done_ocr:
+        raise RuntimeError(f"OCR exited with code {exit_code}")
+
+    if not output_pdf.exists():
+        raise RuntimeError("OCR completed but output file not found")
+
+    post_check = PDFCheckResult()
+    _extract_text_pymupdf(output_pdf, post_check)
+
+    return {
+        "status": "completed",
+        "language": language,
+        "lang_label": lang_label,
+        "pages_total": post_check.total_pages,
+        "pages_with_text": post_check.pages_with_text,
+        "pages_still_image": len(post_check.pages_image_only),
+    }
+
+
+# --- Link Verification (EPUB) --------------------------------------------
+
+_LINK_ATTRS = {
+    "a": ["href"], "area": ["href"], "link": ["href"],
+    "script": ["src"], "img": ["src", "srcset"],
+    "image": ["href", "{http://www.w3.org/1999/xlink}href"],
+    "use": ["href", "{http://www.w3.org/1999/xlink}href"],
+    "video": ["src", "poster"], "audio": ["src"],
+    "source": ["src", "srcset"], "track": ["src"],
+    "iframe": ["src"], "object": ["data"], "embed": ["src"],
+    "blockquote": ["cite"], "q": ["cite"],
+    "ins": ["cite"], "del": ["cite"],
+}
 _CSS_URL_RE = re.compile(r"""url\(\s*['"]?([^'"\)\s]+)['"]?\s*\)""", re.IGNORECASE)
 
 
-def _resolve_epub_path(base_zip_path: str, href: str) -> str | None:
+def _resolve_epub_path(base_zip_path: str, href: str):
     parsed = urlparse(href)
     if parsed.scheme and parsed.scheme not in ("", "file"):
         return None
@@ -451,10 +570,7 @@ def _resolve_epub_path(base_zip_path: str, href: str) -> str | None:
         return None
     raw_path = unquote(parsed.path)
     base_dir = str(PurePosixPath(base_zip_path).parent)
-    if base_dir == ".":
-        resolved = raw_path
-    else:
-        resolved = str(PurePosixPath(base_dir) / raw_path)
+    resolved = raw_path if base_dir == "." else str(PurePosixPath(base_dir) / raw_path)
     parts = []
     for part in resolved.split("/"):
         if part == "..":
@@ -465,8 +581,8 @@ def _resolve_epub_path(base_zip_path: str, href: str) -> str | None:
     return "/".join(parts)
 
 
-def _collect_links_from_html(zip_path: str, text: str) -> list[str]:
-    links: list[str] = []
+def _collect_links_from_html(zip_path, text):
+    links = []
     try:
         root = ET.fromstring(text.encode("utf-8", errors="replace"))
         for elem in root.iter():
@@ -490,12 +606,12 @@ def _collect_links_from_html(zip_path: str, text: str) -> list[str]:
     return links
 
 
-def _collect_links_from_css(text: str) -> list[str]:
+def _collect_links_from_css(text):
     return [m.group(1).strip() for m in _CSS_URL_RE.finditer(text)]
 
 
-def _collect_links_from_ncx(text: str) -> list[str]:
-    links: list[str] = []
+def _collect_links_from_ncx(text):
+    links = []
     try:
         root = ET.fromstring(text.encode("utf-8", errors="replace"))
         for elem in root.iter():
@@ -510,8 +626,8 @@ def _collect_links_from_ncx(text: str) -> list[str]:
     return links
 
 
-def _collect_links_from_nav(text: str) -> list[str]:
-    links: list[str] = []
+def _collect_links_from_nav(text):
+    links = []
     try:
         root = ET.fromstring(text.encode("utf-8", errors="replace"))
         for elem in root.iter():
@@ -528,19 +644,19 @@ def _collect_links_from_nav(text: str) -> list[str]:
 
 class LinkCheckResult:
     def __init__(self):
-        self.total_links: int = 0
-        self.external_links: int = 0
-        self.fragment_links: int = 0
-        self.internal_ok: int = 0
-        self.broken: list[tuple[str, str, str]] = []
-        self.encrypted_remaining: list[str] = []
-        self.warnings: list[str] = []
+        self.total_links = 0
+        self.external_links = 0
+        self.fragment_links = 0
+        self.internal_ok = 0
+        self.broken = []
+        self.encrypted_remaining = []
+        self.warnings = []
 
     @property
-    def has_errors(self) -> bool:
+    def has_errors(self):
         return bool(self.broken) or bool(self.encrypted_remaining)
 
-    def summary(self) -> str:
+    def summary(self):
         lines = [
             f"Links audited  : {self.total_links}",
             f"  External URLs : {self.external_links}",
@@ -553,9 +669,9 @@ class LinkCheckResult:
         if self.broken:
             lines.append("Broken links:")
             for src, href, resolved in self.broken[:20]:
-                lines.append(f"  [{src}] → {href!r}  (resolved: {resolved!r})")
+                lines.append(f"  [{src}] -> {href!r}  (resolved: {resolved!r})")
             if len(self.broken) > 20:
-                lines.append(f"  … and {len(self.broken) - 20} more.")
+                lines.append(f"  ... and {len(self.broken) - 20} more.")
         if self.warnings:
             lines.append("Warnings:")
             for w in self.warnings:
@@ -563,26 +679,21 @@ class LinkCheckResult:
         return "\n".join(lines)
 
 
-def verify_epub_links(epub_path: Path) -> LinkCheckResult:
+def verify_epub_links(epub_path):
     result = LinkCheckResult()
-
     if not epub_path.exists():
         result.warnings.append(f"EPUB file not found: {epub_path}")
         return result
-
     try:
         zf = zipfile.ZipFile(epub_path, "r")
     except zipfile.BadZipFile as e:
         result.warnings.append(f"Cannot open EPUB as zip: {e}")
         return result
-
     with zf:
         zip_names_lower = {n.lower(): n for n in zf.namelist()}
         zip_names_set = set(zf.namelist())
-
-        def zip_has(path: str) -> bool:
+        def zip_has(path):
             return path in zip_names_set or path.lower() in zip_names_lower
-
         if "META-INF/encryption.xml" in zip_names_set:
             try:
                 enc_xml = zf.read("META-INF/encryption.xml").decode("utf-8", errors="replace")
@@ -595,7 +706,6 @@ def verify_epub_links(epub_path: Path) -> LinkCheckResult:
                             result.encrypted_remaining.append(uri)
             except Exception as e:
                 result.warnings.append(f"Could not parse encryption.xml: {e}")
-
         opf_path = None
         if "META-INF/container.xml" in zip_names_set:
             try:
@@ -610,17 +720,14 @@ def verify_epub_links(epub_path: Path) -> LinkCheckResult:
                 pass
         if not opf_path:
             opf_path = next((n for n in zf.namelist() if n.endswith(".opf")), None)
-
-        manifest_items: dict[str, str] = {}
-        spine_items: list[str] = []
-        nav_path: str | None = None
-        ncx_path: str | None = None
-
+        manifest_items = {}
+        spine_items = []
+        nav_path = None
+        ncx_path = None
         if opf_path:
             try:
                 opf_xml = zf.read(opf_path).decode("utf-8", errors="replace")
                 opf_root = ET.fromstring(opf_xml)
-
                 for elem in opf_root.iter():
                     local = elem.tag.split("}")[-1].lower() if "}" in elem.tag else elem.tag.lower()
                     if local == "item":
@@ -640,31 +747,25 @@ def verify_epub_links(epub_path: Path) -> LinkCheckResult:
                                 result.broken.append((opf_path, href, resolved))
                             else:
                                 result.internal_ok += 1
-
                     elif local == "itemref":
                         idref = elem.get("idref", "")
                         if idref in manifest_items:
                             spine_items.append(manifest_items[idref])
-
             except Exception as e:
                 result.warnings.append(f"Could not parse OPF: {e}")
-
         for zip_entry in zf.namelist():
             lower = zip_entry.lower()
             is_html = lower.endswith((".xhtml", ".html", ".htm", ".xml"))
             is_css = lower.endswith(".css")
             is_ncx = lower.endswith(".ncx") or zip_entry == ncx_path
             is_nav = zip_entry == nav_path
-
             if not (is_html or is_css or is_ncx or is_nav):
                 continue
-
             try:
                 text = zf.read(zip_entry).decode("utf-8", errors="replace")
             except Exception as e:
                 result.warnings.append(f"Cannot read {zip_entry}: {e}")
                 continue
-
             if is_css:
                 raw_links = _collect_links_from_css(text)
             elif is_ncx:
@@ -673,7 +774,6 @@ def verify_epub_links(epub_path: Path) -> LinkCheckResult:
                 raw_links = _collect_links_from_nav(text) + _collect_links_from_html(zip_entry, text)
             else:
                 raw_links = _collect_links_from_html(zip_entry, text)
-
             for href in raw_links:
                 if not href:
                     continue
@@ -693,26 +793,17 @@ def verify_epub_links(epub_path: Path) -> LinkCheckResult:
                     result.internal_ok += 1
                 else:
                     result.broken.append((zip_entry, href, resolved))
-
     return result
 
 
-# ─── Pipeline ─────────────────────────────────────────────────────────────
+# --- Pipeline -------------------------------------------------------------
 
 
 def convert_pipeline(acsm_path, output_dir):
-    """Generator that yields (step, message) tuples for each conversion step.
+    """Generator yielding (step, message) tuples.
 
-    Used by both the CLI (do_convert) and the web interface (app.py).
-    Raises RuntimeError on failure.
-
-    Steps:
-      1. Check tools
-      2. Detect format (EPUB or PDF)
-      3. Register Adobe device
-      4. Download file
-      5. Remove DRM
-      6. Verify (links for EPUB, readability for PDF)
+    PDF path: steps 1-7 (step 7 = OCR if needed)
+    EPUB path: steps 1-6 (no OCR)
     """
     acsm_path = Path(acsm_path).resolve()
     if not acsm_path.exists():
@@ -727,11 +818,11 @@ def convert_pipeline(acsm_path, output_dir):
     # Step 1: Check tools
     problems = []
     if not find_tool("acsmdownloader"):
-        problems.append("acsmdownloader not found (run: python3 converter.py --setup)")
+        problems.append("acsmdownloader not found (run --setup)")
     if not find_tool("adept_activate"):
-        problems.append("adept_activate not found (run: python3 converter.py --setup)")
+        problems.append("adept_activate not found (run --setup)")
     if not find_tool("adept_remove"):
-        problems.append("adept_remove not found (run: python3 converter.py --setup)")
+        problems.append("adept_remove not found (run --setup)")
     if problems:
         raise RuntimeError("Missing components: " + "; ".join(set(problems)))
     yield (1, "All tools ready.")
@@ -756,67 +847,98 @@ def convert_pipeline(acsm_path, output_dir):
     drm_file.unlink()
     yield (5, f"DRM removed: {output_file.name}")
 
-    # Step 6: Verify
+    # Step 6: Verify readability
     if fmt == "pdf":
         print("Verifying PDF readability...")
         pdf_result = verify_pdf_readability(output_file)
 
         if pdf_result.encrypted:
             raise RuntimeError(
-                "DRM removal incomplete: the PDF is still encrypted and cannot be read."
+                "DRM removal incomplete: the PDF is still encrypted."
             )
 
         if pdf_result.probably_image_only:
-            # No text AND no fonts — likely a scanned/image-only PDF.
-            # Warn but do NOT block the download.
-            warning_msg = (
-                f"PDF check: 0/{pdf_result.total_pages} pages have extractable text "
-                f"and no embedded fonts were found. The PDF may be image-only "
-                f"(scanned pages without a text layer). It is still downloadable."
-            )
-            yield (6, warning_msg)
-        elif pdf_result.pages_image_only:
+            yield (6, (
+                f"PDF scan: 0/{pdf_result.total_pages} pages have extractable text. "
+                f"Image-only PDF detected -- will run OCR to add text layer."
+            ))
+        elif pdf_result.needs_ocr:
             img_count = len(pdf_result.pages_image_only)
-            warning_msg = (
-                f"PDF check: {pdf_result.pages_with_text}/{pdf_result.total_pages} pages "
-                f"have readable text, {img_count} page(s) are image-only. "
-                f"The PDF is usable but some pages may lack selectable text."
-            )
-            yield (6, warning_msg)
+            yield (6, (
+                f"PDF scan: {pdf_result.pages_with_text}/{pdf_result.total_pages} pages "
+                f"have text, {img_count} page(s) are image-only -- will OCR those pages."
+            ))
         else:
-            yield (
-                6,
+            yield (6, (
                 f"PDF verified: {pdf_result.pages_with_text}/{pdf_result.total_pages} pages "
-                f"have readable, selectable text — all OK.",
-            )
+                f"have readable, selectable text -- all OK. No OCR needed."
+            ))
+
+        # Step 7: OCR (if needed)
+        if pdf_result.needs_ocr or pdf_result.probably_image_only:
+            print("Running OCR to add text layer...")
+            ocr_output = output_dir / f"{stem}_ocr.pdf"
+            try:
+                ocr_result = run_ocr(
+                    input_pdf=output_file,
+                    output_pdf=ocr_output,
+                    language="auto",
+                    dpi=300,
+                    enhance=True,
+                )
+                if ocr_result["status"] == "already_has_text":
+                    yield (7, (
+                        f"OCR skipped -- all pages already have a text layer. "
+                        f"Language: {ocr_result['lang_label']}"
+                    ))
+                else:
+                    output_file.unlink()
+                    ocr_output.rename(output_file)
+                    still_img = ocr_result.get("pages_still_image", 0)
+                    text_pages = ocr_result.get("pages_with_text", 0)
+                    total = ocr_result.get("pages_total", 0)
+                    if still_img > 0:
+                        yield (7, (
+                            f"OCR complete ({ocr_result['lang_label']}): "
+                            f"{text_pages}/{total} pages now have text. "
+                            f"{still_img} page(s) could not be OCR'd."
+                        ))
+                    else:
+                        yield (7, (
+                            f"OCR complete ({ocr_result['lang_label']}): "
+                            f"all {total} pages now have readable, searchable text."
+                        ))
+            except RuntimeError as e:
+                if ocr_output.exists():
+                    ocr_output.unlink()
+                yield (7, f"OCR failed: {e}. PDF available without text layer.")
+        else:
+            yield (7, "OCR not needed -- PDF is already fully readable.")
+
     else:
         # EPUB link verification
         print("Verifying link integrity...")
         link_result = verify_epub_links(output_file)
-
         if link_result.encrypted_remaining:
             files = ", ".join(link_result.encrypted_remaining[:5])
             raise RuntimeError(
                 f"DRM removal incomplete: {len(link_result.encrypted_remaining)} file(s) "
-                f"are still encrypted ({files}). The EPUB may not be readable."
+                f"are still encrypted ({files})."
             )
-
         if link_result.broken:
             broken_count = len(link_result.broken)
             sample = link_result.broken[0]
-            warning_msg = (
+            yield (6, (
                 f"Link check: {link_result.internal_ok} OK, "
-                f"{broken_count} broken (e.g. [{sample[0]}]→{sample[1]!r}). "
-                f"The EPUB is usable but some links may not work."
-            )
-            yield (6, warning_msg)
+                f"{broken_count} broken (e.g. [{sample[0]}]->{sample[1]!r}). "
+                f"EPUB usable but some links may not work."
+            ))
         else:
-            yield (
-                6,
+            yield (6, (
                 f"Links verified: {link_result.internal_ok} internal, "
                 f"{link_result.external_links} external, "
-                f"{link_result.fragment_links} anchors — all OK.",
-            )
+                f"{link_result.fragment_links} anchors -- all OK."
+            ))
 
     # Done
     size_mb = output_file.stat().st_size / (1024 * 1024) if output_file.exists() else 0
@@ -824,14 +946,13 @@ def convert_pipeline(acsm_path, output_dir):
 
 
 def do_convert(acsm_file, output_dir):
-    """Run the full ACSM conversion pipeline (CLI entry point)."""
     try:
         for step, message in convert_pipeline(acsm_file, output_dir):
             if step == "done":
                 parts = message.split("|")
                 print(f"\n=== Done! ===\nFile: {parts[0]} ({parts[1]})")
             else:
-                print(f"\n=== Step {step}/6: {message} ===")
+                print(f"\n=== Step {step}: {message} ===")
     except RuntimeError as e:
         print(str(e))
         sys.exit(1)
@@ -842,26 +963,13 @@ def main():
         description="Convert ACSM ebook tokens to DRM-free EPUB or PDF.",
         epilog="First run: python3 converter.py --setup",
     )
-    parser.add_argument(
-        "acsm_file",
-        nargs="?",
-        help="Path to the .acsm file to convert",
-    )
-    parser.add_argument(
-        "--setup",
-        action="store_true",
-        help="Install dependencies and build tools (run once)",
-    )
-    parser.add_argument(
-        "-o", "--output-dir",
-        default="output",
-        help="Output directory (default: output)",
-    )
-    parser.add_argument(
-        "--verify-only",
-        metavar="FILE",
-        help="Audit an existing EPUB (links) or PDF (readability) — no conversion",
-    )
+    parser.add_argument("acsm_file", nargs="?", help="Path to the .acsm file")
+    parser.add_argument("--setup", action="store_true", help="Install dependencies and build tools")
+    parser.add_argument("-o", "--output-dir", default="output", help="Output directory")
+    parser.add_argument("--verify-only", metavar="FILE", help="Audit an existing EPUB or PDF")
+    parser.add_argument("--ocr-only", metavar="FILE", help="Run OCR on an existing PDF")
+    parser.add_argument("--ocr-lang", default="auto",
+                        help="OCR language: auto, eng, chi_tra, chi_sim (default: auto)")
     args = parser.parse_args()
 
     if args.verify_only:
@@ -875,14 +983,31 @@ def main():
             print(result.summary())
             sys.exit(1 if result.has_errors else 0)
 
+    if args.ocr_only:
+        path = Path(args.ocr_only)
+        if not path.exists():
+            print(f"File not found: {path}")
+            sys.exit(1)
+        out_path = path.parent / f"{path.stem}_ocr.pdf"
+        print(f"Running OCR on {path.name}...")
+        try:
+            result = run_ocr(path, out_path, language=args.ocr_lang)
+            print(f"Done! Output: {out_path.name}")
+            print(f"  Language: {result['lang_label']}")
+            print(f"  Status: {result['status']}")
+            if result.get("pages_with_text"):
+                print(f"  Pages with text: {result['pages_with_text']}/{result['pages_total']}")
+        except RuntimeError as e:
+            print(f"OCR failed: {e}")
+            sys.exit(1)
+        return
+
     if args.setup:
         do_setup()
         return
-
     if not args.acsm_file:
         parser.print_help()
         sys.exit(1)
-
     do_convert(args.acsm_file, args.output_dir)
 
 

@@ -1,10 +1,17 @@
 FROM python:3.11-slim
 
-# Install build dependencies for libgourou and PyMuPDF
+# Install build dependencies for libgourou, OCR, and PyMuPDF
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git cmake make g++ \
     libpugixml-dev libzip-dev libssl-dev libcurl4-openssl-dev \
     libmupdf-dev \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    tesseract-ocr-chi-tra \
+    tesseract-ocr-chi-sim \
+    ghostscript \
+    unpaper \
+    pngquant \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -28,4 +35,4 @@ RUN mkdir -p uploads output covers
 
 EXPOSE 8080
 
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:8080", "--threads", "4", "--timeout", "300"]
+CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:8080", "--threads", "4", "--timeout", "600"]

@@ -29,7 +29,7 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 COVER_DIR.mkdir(exist_ok=True)
 
-TOTAL_STEPS = 6
+TOTAL_STEPS = 7
 
 STEP_LABELS = {
     1: "Checking tools...",
@@ -37,7 +37,8 @@ STEP_LABELS = {
     3: "Registering Adobe device...",
     4: "Downloading ebook...",
     5: "Removing DRM...",
-    6: "Verifying output...",
+    6: "Verifying readability...",
+    7: "Running OCR (if needed)...",
 }
 
 # Track active conversions: job_id -> {steps: [...], status, error}
@@ -197,7 +198,10 @@ def run_conversion_job(job_id, acsm_path, output_dir):
                 job["done_message"] = message
             else:
                 step_num = int(step)
-                is_warning = (step_num == 6 and ("broken" in message.lower() or "image-only" in message.lower()))
+                is_warning = (
+                    (step_num == 6 and ("broken" in message.lower() or "image-only" in message.lower()))
+                    or (step_num == 7 and ("failed" in message.lower() or "could not" in message.lower()))
+                )
                 job["steps"].append({
                     "step": step_num,
                     "message": message,
@@ -206,7 +210,7 @@ def run_conversion_job(job_id, acsm_path, output_dir):
                 next_step = step_num + 1
                 if next_step <= TOTAL_STEPS:
                     job["current_step"] = next_step
-                    job["current_label"] = STEP_LABELS[next_step]
+                    job["current_label"] = STEP_LABELS.get(next_step, "")
     except RuntimeError as e:
         print(f"[DEBUG] Job {job_id} RuntimeError: {e}", flush=True)
         job["status"] = "error"
