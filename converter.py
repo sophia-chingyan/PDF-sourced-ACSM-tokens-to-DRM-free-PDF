@@ -551,22 +551,49 @@ def _filter_ocr_languages(requested: str) -> str:
     return "+".join(valid)
 
 
+def _compress_page_ranges(pages: list[int]) -> str:
+    """Convert [1,2,3,5,7,8,9] to '1-3,5,7-9' for ocrmypdf --pages."""
+    if not pages:
+        return ""
+    sorted_pages = sorted(set(pages))
+    ranges = []
+    start = prev = sorted_pages[0]
+    for p in sorted_pages[1:]:
+        if p == prev + 1:
+            prev = p
+        else:
+            ranges.append(f"{start}-{prev}" if prev > start else str(start))
+            start = prev = p
+    ranges.append(f"{start}-{prev}" if prev > start else str(start))
+    return ",".join(ranges)
+
+
 def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
-            dpi: int = 300, enhance: bool = True) -> dict:
+            dpi: int = 300, pages_to_ocr: list[int] | None = None) -> dict:
     """Run OCR on a PDF to add a searchable text layer.
 
-    Uses ocrmypdf which:
-    - Adds invisible text overlay on existing page images
-    - Preserves original layout and images
-    - Skips pages that already have text (--skip-text)
-    - Supports English + Chinese (Traditional & Simplified)
+    CRITICAL DESIGN: preserve original PDF structure, images, and links.
+
+    Uses ocrmypdf with carefully chosen options:
+    - output_type='pdf'   : avoids Ghostscript PDF/A conversion which strips
+                            hyperlinks, bookmarks, TOC, and annotations
+    - skip_text=True      : never re-OCR pages that already have text
+    - pages=<list>        : only process image-only pages, leaving all other
+                            pages completely untouched (bit-for-bit)
+    - NO clean            : unpaper destroys real images/diagrams in ebooks
+    - NO deskew           : ebook pages are digitally straight; deskewing
+                            rotates pages and misaligns text overlay
+    - optimize=0          : no re-encoding of images for maximum fidelity
+
+    After OCR, restores any bookmarks/links/annotations that may have been
+    lost from the processed pages.
     """
     try:
         import ocrmypdf
     except ImportError:
         raise RuntimeError(
             "ocrmypdf is not installed. Run: pip install ocrmypdf\n"
-            "Also ensure tesseract is installed with Chinese language packs."
+            "Also ensure tesseract is installed with language packs."
         )
 
     if language == "auto":
@@ -581,15 +608,34 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
         "input_file": str(input_pdf),
         "output_file": str(output_pdf),
         "language": language,
-        "deskew": enhance,
-        "skip_text": True,
-        "optimize": 1,
-        "image_dpi": dpi,
+        "output_type": "pdf",       # NOT pdfa — preserves links & annotations
+        "skip_text": True,           # never re-OCR existing text pages
+        "optimize": 0,               # no image re-encoding for max fidelity
+        "image_dpi": dpi,            # DPI for images without resolution info
         "progress_bar": False,
         "jobs": min(os.cpu_count() or 1, 4),
+        # Deliberately OMITTED:
+        # - deskew: rotates pages, misaligns text overlay in digital ebooks
+        # - clean:  runs unpaper which destroys real images/diagrams
     }
-    if enhance:
-        ocr_kwargs["clean"] = True
+
+    # Target only image-only pages if we know which ones need OCR.
+    # Pages NOT in this list are completely untouched — their links,
+    # images, and structure are preserved bit-for-bit.
+    # ocrmypdf accepts pages as a comma-separated string like "1,3,5-7"
+    if pages_to_ocr:
+        pages_str = _compress_page_ranges(pages_to_ocr)
+        ocr_kwargs["pages"] = pages_str
+        print(f"  Targeting {len(pages_to_ocr)} image-only page(s): {pages_str}"
+              f"\n  All other pages left untouched")
+
+    # Snapshot bookmarks and link annotations before OCR
+    original_bookmarks = None
+    original_annotations = {}
+    try:
+        original_bookmarks, original_annotations = _snapshot_pdf_metadata(input_pdf)
+    except Exception as e:
+        print(f"  (could not snapshot metadata: {e})")
 
     try:
         exit_code = ocrmypdf.ocr(**ocr_kwargs)
@@ -611,6 +657,10 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
             "tesseract-ocr-chi-tra tesseract-ocr-chi-sim "
             "tesseract-ocr-jpn tesseract-ocr-kor"
         )
+    except ocrmypdf.exceptions.EncryptedPdfError:
+        raise RuntimeError(
+            "PDF is encrypted and cannot be OCR'd. DRM removal may be incomplete."
+        )
     except Exception as e:
         raise RuntimeError(f"OCR processing failed: {e}")
 
@@ -620,6 +670,13 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
     if not output_pdf.exists():
         raise RuntimeError("OCR completed but output file not found")
 
+    # Restore any bookmarks/links/annotations lost during OCR
+    try:
+        _restore_pdf_metadata(output_pdf, original_bookmarks, original_annotations)
+    except Exception as e:
+        print(f"  (metadata restoration skipped: {e})")
+
+    # Verify post-OCR
     post_check = PDFCheckResult()
     _extract_text_pymupdf(output_pdf, post_check)
 
@@ -631,6 +688,106 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
         "pages_with_text": post_check.pages_with_text,
         "pages_still_image": len(post_check.pages_image_only),
     }
+
+
+def _snapshot_pdf_metadata(pdf_path: Path):
+    """Snapshot bookmarks (TOC) and per-page link annotations from a PDF.
+
+    Returns (toc, annotations_dict) where:
+    - toc is the list returned by doc.get_toc()
+    - annotations_dict maps page_index -> list of link annotation dicts
+    """
+    try:
+        import fitz
+    except ImportError:
+        return None, {}
+
+    doc = fitz.open(str(pdf_path))
+    toc = doc.get_toc(simple=False)  # [level, title, page, dest_dict]
+
+    annotations = {}
+    for page_idx in range(len(doc)):
+        page = doc[page_idx]
+        page_links = []
+        for link in page.get_links():
+            # Preserve URI links (kind=2), internal goto (kind=1),
+            # named destinations (kind=4), and goto-remote (kind=5)
+            kind = link.get("kind", 0)
+            if kind in (1, 2, 4, 5):
+                page_links.append(link)
+        if page_links:
+            annotations[page_idx] = page_links
+
+    doc.close()
+    return toc, annotations
+
+
+def _restore_pdf_metadata(pdf_path: Path, original_toc, original_annotations):
+    """Restore bookmarks and link annotations to an OCR'd PDF.
+
+    Compares the OCR'd output against the original snapshot and adds back
+    any bookmarks or links that were lost during processing.
+    """
+    try:
+        import fitz
+    except ImportError:
+        return
+
+    if not original_toc and not original_annotations:
+        return  # nothing to restore
+
+    doc = fitz.open(str(pdf_path))
+    modified = False
+
+    # Restore TOC / bookmarks if they were lost
+    if original_toc:
+        current_toc = doc.get_toc()
+        if len(current_toc) < len(original_toc):
+            print(f"  Restoring {len(original_toc)} bookmarks/TOC entries...")
+            try:
+                doc.set_toc(original_toc)
+                modified = True
+            except Exception as e:
+                print(f"  (TOC restore failed: {e})")
+
+    # Restore link annotations per page
+    if original_annotations:
+        restored_count = 0
+        for page_idx, orig_links in original_annotations.items():
+            if page_idx >= len(doc):
+                continue
+            page = doc[page_idx]
+            current_links = page.get_links()
+
+            # If OCR'd page has fewer links, some were lost — clear and
+            # re-insert all originals to avoid duplicates
+            if len(current_links) < len(orig_links):
+                # Remove existing links first
+                for cl in current_links:
+                    try:
+                        page.delete_link(cl)
+                    except Exception:
+                        pass
+                # Re-insert all original links
+                for link in orig_links:
+                    try:
+                        page.insert_link(link)
+                        restored_count += 1
+                    except Exception:
+                        pass
+                modified = True
+
+        if restored_count > 0:
+            print(f"  Restored {restored_count} link annotations across "
+                  f"{len(original_annotations)} page(s)")
+
+    if modified:
+        try:
+            doc.saveIncr()  # incremental save preserves existing structure
+        except Exception:
+            # Fallback: full save with minimal processing
+            doc.save(str(pdf_path), garbage=0, deflate=False)
+    doc.close()
 
 
 # --- Link Verification (EPUB) --------------------------------------------
@@ -971,7 +1128,7 @@ def convert_pipeline(acsm_path, output_dir):
                     output_pdf=ocr_output,
                     language="auto",
                     dpi=300,
-                    enhance=True,
+                    pages_to_ocr=pdf_result.pages_image_only or None,
                 )
                 if ocr_result["status"] == "already_has_text":
                     yield (7, (
