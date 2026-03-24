@@ -605,8 +605,6 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
     print(f"  OCR language: {lang_label} ({language})")
 
     ocr_kwargs = {
-        "input_file": str(input_pdf),
-        "output_file": str(output_pdf),
         "language": language,
         "output_type": "pdf",       # NOT pdfa — preserves links & annotations
         "skip_text": True,           # never re-OCR existing text pages
@@ -638,7 +636,7 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
         print(f"  (could not snapshot metadata: {e})")
 
     try:
-        exit_code = ocrmypdf.ocr(**ocr_kwargs)
+        exit_code = ocrmypdf.ocr(str(input_pdf), str(output_pdf), **ocr_kwargs)
     except ocrmypdf.exceptions.PriorOcrFoundError:
         print("  All pages already have OCR text -- no processing needed")
         if input_pdf != output_pdf:
