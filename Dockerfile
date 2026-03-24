@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-eng \
     tesseract-ocr-chi-tra \
     tesseract-ocr-chi-sim \
+    tesseract-ocr-jpn \
+    tesseract-ocr-kor \
     ghostscript \
     unpaper \
     pngquant \

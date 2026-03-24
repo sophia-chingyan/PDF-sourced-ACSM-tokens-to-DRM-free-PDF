@@ -4,8 +4,11 @@ ACSM to EPUB/PDF Converter
 
 Converts Adobe ACSM ebook tokens to DRM-free EPUB or PDF files
 for personal offline reading.  When the PDF is image-only (scanned),
-an OCR step automatically adds a searchable text layer (English,
-Traditional Chinese & Simplified Chinese).
+an OCR step automatically adds a searchable text layer.
+
+Supported OCR languages:
+    English, Traditional Chinese, Simplified Chinese,
+    Japanese (Hiragana, Katakana, Kanji), Korean (Hangul)
 
 Prerequisites (installed automatically by setup):
     brew install pugixml libzip openssl curl cmake
@@ -343,61 +346,142 @@ def verify_pdf_readability(pdf_path: Path) -> PDFCheckResult:
 
 # --- OCR Engine -----------------------------------------------------------
 
+# Character sets for CJK variant detection
 _TRA_CHARS = "國學數與對這經區體發聯當會從點問機關個義處應實來將過還後給讓說時種為開黨對質開裡類"
 _SIM_CHARS = "国学数与对这经区体发联当会从点问机关个义处应实来将过还后给让说时种为开党对质开里类"
+
+# All supported languages (Tesseract lang codes)
+ALL_OCR_LANGS = "eng+chi_tra+chi_sim+jpn+kor"
 
 LANG_LABELS = {
     "eng": "English",
     "chi_tra": "Traditional Chinese",
     "chi_sim": "Simplified Chinese",
+    "jpn": "Japanese",
+    "kor": "Korean",
     "chi_tra+chi_sim": "Chinese (mixed)",
-    "chi_tra+chi_sim+eng": "All (Chinese + English)",
+    "chi_tra+chi_sim+eng": "Chinese + English",
     "eng+chi_tra": "English + Trad. Chinese",
     "eng+chi_sim": "English + Simp. Chinese",
+    "jpn+eng": "Japanese + English",
+    "kor+eng": "Korean + English",
+    "jpn+chi_tra": "Japanese + Trad. Chinese",
+    "jpn+chi_sim": "Japanese + Simp. Chinese",
+    "eng+chi_tra+chi_sim+jpn+kor": "All (EN/ZH/JA/KO)",
 }
 
 
 def detect_language_from_text(text: str) -> str:
-    """Detect language from sample text (mirrors ScanLens logic)."""
+    """Detect script/language from sample text.
+
+    Detects: English, Traditional Chinese, Simplified Chinese,
+    Japanese (Hiragana, Katakana, Kanji), Korean (Hangul).
+
+    Unicode ranges used:
+      - CJK Unified Ideographs  U+4E00..U+9FFF  (shared by ZH/JA/KO)
+      - Hiragana                U+3040..U+309F   (Japanese)
+      - Katakana                U+30A0..U+30FF   (Japanese)
+      - Hangul Syllables        U+AC00..U+D7AF   (Korean)
+      - Hangul Jamo             U+1100..U+11FF   (Korean)
+      - Hangul Compat. Jamo     U+3130..U+318F   (Korean)
+      - Latin A-Z/a-z           U+0041..U+005A / U+0061..U+007A
+    """
     if not text or len(text.strip()) < 5:
-        return "chi_tra+chi_sim+eng"
-    cjk_count = eng_count = tra_indicators = sim_indicators = 0
+        return ALL_OCR_LANGS  # too little text -> use all
+
+    cjk_count = 0       # Han ideographs (shared ZH/JA/KO)
+    eng_count = 0        # Latin letters
+    hiragana_count = 0   # Japanese hiragana
+    katakana_count = 0   # Japanese katakana
+    hangul_count = 0     # Korean hangul
+    tra_indicators = 0   # Traditional Chinese character hints
+    sim_indicators = 0   # Simplified Chinese character hints
+
     for ch in text:
         code = ord(ch)
+        # CJK Unified Ideographs (shared by Chinese, Japanese kanji, Korean hanja)
         if 0x4E00 <= code <= 0x9FFF:
             cjk_count += 1
             if ch in _TRA_CHARS:
                 tra_indicators += 1
             if ch in _SIM_CHARS:
                 sim_indicators += 1
+        # Hiragana
+        elif 0x3040 <= code <= 0x309F:
+            hiragana_count += 1
+        # Katakana
+        elif 0x30A0 <= code <= 0x30FF:
+            katakana_count += 1
+        # Hangul Syllables
+        elif 0xAC00 <= code <= 0xD7AF:
+            hangul_count += 1
+        # Hangul Jamo
+        elif 0x1100 <= code <= 0x11FF:
+            hangul_count += 1
+        # Hangul Compatibility Jamo
+        elif 0x3130 <= code <= 0x318F:
+            hangul_count += 1
+        # Latin A-Z / a-z
         elif (0x41 <= code <= 0x5A) or (0x61 <= code <= 0x7A):
             eng_count += 1
-    total = cjk_count + eng_count
+
+    jpn_kana = hiragana_count + katakana_count
+    total = cjk_count + eng_count + jpn_kana + hangul_count
     if total == 0:
-        return "chi_tra+chi_sim+eng"
+        return ALL_OCR_LANGS
+
+    # --- Japanese: presence of kana is a strong signal ---
+    if jpn_kana > 0:
+        # Kana exists -> definitely Japanese
+        if eng_count > total * 0.2:
+            return "jpn+eng"
+        if tra_indicators > sim_indicators:
+            return "jpn+chi_tra"  # Japanese + Trad. Chinese (common in some texts)
+        return "jpn"
+
+    # --- Korean: presence of Hangul is a strong signal ---
+    if hangul_count > 0:
+        if hangul_count / total > 0.3:
+            if eng_count > total * 0.2:
+                return "kor+eng"
+            return "kor"
+        # Mixed Korean + CJK
+        if eng_count > total * 0.2:
+            return "kor+eng"
+        return "kor"
+
+    # --- Chinese or English (no kana, no hangul) ---
     if cjk_count / total > 0.3:
+        # Primarily CJK -- pick variant
         if tra_indicators > sim_indicators * 1.5:
             return "chi_tra"
         if sim_indicators > tra_indicators * 1.5:
             return "chi_sim"
         return "chi_tra+chi_sim"
+
     if cjk_count > 0:
+        # Mixed CJK + English
         if tra_indicators > sim_indicators:
             return "eng+chi_tra"
         if sim_indicators > tra_indicators:
             return "eng+chi_sim"
         return "chi_tra+chi_sim+eng"
+
     return "eng"
 
 
 def detect_language_from_pdf(pdf_path: Path) -> str:
-    """Quick-scan PDF to detect language for OCR."""
+    """Quick-scan PDF to detect language for OCR.
+
+    Supports: English, Traditional Chinese, Simplified Chinese,
+    Japanese (Hiragana, Katakana, Kanji), Korean (Hangul).
+    """
     # Try existing extracted text first
     check = PDFCheckResult()
     _extract_text_pymupdf(pdf_path, check)
     if check.sample_text and not check.sample_text.startswith("("):
         detected = detect_language_from_text(check.sample_text)
-        if detected != "chi_tra+chi_sim+eng":
+        if detected != ALL_OCR_LANGS:
             return detected
 
     # Render first page and run quick Tesseract detection
@@ -407,7 +491,7 @@ def detect_language_from_pdf(pdf_path: Path) -> str:
         doc = fitz.open(str(pdf_path))
         if len(doc) == 0:
             doc.close()
-            return "chi_tra+chi_sim+eng"
+            return ALL_OCR_LANGS
         page = doc[0]
         mat = fitz.Matrix(150 / 72, 150 / 72)
         pix = page.get_pixmap(matrix=mat)
@@ -418,8 +502,10 @@ def detect_language_from_pdf(pdf_path: Path) -> str:
             tmp.write(img_bytes)
             tmp_path = tmp.name
         try:
+            # Use all installed languages for the detection pass
+            detect_langs = _filter_ocr_languages(ALL_OCR_LANGS)
             r = run(["tesseract", tmp_path, "stdout",
-                      "-l", "eng+chi_tra+chi_sim", "--psm", "3"], timeout=30)
+                      "-l", detect_langs, "--psm", "3"], timeout=30)
             if r.returncode == 0 and r.stdout:
                 return detect_language_from_text(r.stdout)
         except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -434,7 +520,7 @@ def detect_language_from_pdf(pdf_path: Path) -> str:
     except Exception:
         pass
 
-    return "chi_tra+chi_sim+eng"
+    return ALL_OCR_LANGS
 
 
 def _check_tesseract_languages():
@@ -522,7 +608,8 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
             f"OCR dependency missing: {e}\n"
             "Ensure tesseract and language packs are installed:\n"
             "  apt-get install tesseract-ocr tesseract-ocr-eng "
-            "tesseract-ocr-chi-tra tesseract-ocr-chi-sim"
+            "tesseract-ocr-chi-tra tesseract-ocr-chi-sim "
+            "tesseract-ocr-jpn tesseract-ocr-kor"
         )
     except Exception as e:
         raise RuntimeError(f"OCR processing failed: {e}")
@@ -969,7 +1056,7 @@ def main():
     parser.add_argument("--verify-only", metavar="FILE", help="Audit an existing EPUB or PDF")
     parser.add_argument("--ocr-only", metavar="FILE", help="Run OCR on an existing PDF")
     parser.add_argument("--ocr-lang", default="auto",
-                        help="OCR language: auto, eng, chi_tra, chi_sim (default: auto)")
+                        help="OCR language: auto, eng, chi_tra, chi_sim, jpn, kor (default: auto)")
     args = parser.parse_args()
 
     if args.verify_only:
