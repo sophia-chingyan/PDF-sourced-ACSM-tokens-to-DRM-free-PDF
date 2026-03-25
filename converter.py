@@ -346,11 +346,9 @@ def verify_pdf_readability(pdf_path: Path) -> PDFCheckResult:
 
 # --- OCR Engine -----------------------------------------------------------
 
-# Character sets for CJK variant detection
 _TRA_CHARS = "國學數與對這經區體發聯當會從點問機關個義處應實來將過還後給讓說時種為開黨對質開裡類"
 _SIM_CHARS = "国学数与对这经区体发联当会从点问机关个义处应实来将过还后给让说时种为开党对质开里类"
 
-# All supported languages (Tesseract lang codes)
 ALL_OCR_LANGS = "eng+chi_tra+chi_sim+jpn+kor"
 
 LANG_LABELS = {
@@ -372,56 +370,35 @@ LANG_LABELS = {
 
 
 def detect_language_from_text(text: str) -> str:
-    """Detect script/language from sample text.
-
-    Detects: English, Traditional Chinese, Simplified Chinese,
-    Japanese (Hiragana, Katakana, Kanji), Korean (Hangul).
-
-    Unicode ranges used:
-      - CJK Unified Ideographs  U+4E00..U+9FFF  (shared by ZH/JA/KO)
-      - Hiragana                U+3040..U+309F   (Japanese)
-      - Katakana                U+30A0..U+30FF   (Japanese)
-      - Hangul Syllables        U+AC00..U+D7AF   (Korean)
-      - Hangul Jamo             U+1100..U+11FF   (Korean)
-      - Hangul Compat. Jamo     U+3130..U+318F   (Korean)
-      - Latin A-Z/a-z           U+0041..U+005A / U+0061..U+007A
-    """
     if not text or len(text.strip()) < 5:
-        return ALL_OCR_LANGS  # too little text -> use all
+        return ALL_OCR_LANGS
 
-    cjk_count = 0       # Han ideographs (shared ZH/JA/KO)
-    eng_count = 0        # Latin letters
-    hiragana_count = 0   # Japanese hiragana
-    katakana_count = 0   # Japanese katakana
-    hangul_count = 0     # Korean hangul
-    tra_indicators = 0   # Traditional Chinese character hints
-    sim_indicators = 0   # Simplified Chinese character hints
+    cjk_count = 0
+    eng_count = 0
+    hiragana_count = 0
+    katakana_count = 0
+    hangul_count = 0
+    tra_indicators = 0
+    sim_indicators = 0
 
     for ch in text:
         code = ord(ch)
-        # CJK Unified Ideographs (shared by Chinese, Japanese kanji, Korean hanja)
         if 0x4E00 <= code <= 0x9FFF:
             cjk_count += 1
             if ch in _TRA_CHARS:
                 tra_indicators += 1
             if ch in _SIM_CHARS:
                 sim_indicators += 1
-        # Hiragana
         elif 0x3040 <= code <= 0x309F:
             hiragana_count += 1
-        # Katakana
         elif 0x30A0 <= code <= 0x30FF:
             katakana_count += 1
-        # Hangul Syllables
         elif 0xAC00 <= code <= 0xD7AF:
             hangul_count += 1
-        # Hangul Jamo
         elif 0x1100 <= code <= 0x11FF:
             hangul_count += 1
-        # Hangul Compatibility Jamo
         elif 0x3130 <= code <= 0x318F:
             hangul_count += 1
-        # Latin A-Z / a-z
         elif (0x41 <= code <= 0x5A) or (0x61 <= code <= 0x7A):
             eng_count += 1
 
@@ -430,29 +407,23 @@ def detect_language_from_text(text: str) -> str:
     if total == 0:
         return ALL_OCR_LANGS
 
-    # --- Japanese: presence of kana is a strong signal ---
     if jpn_kana > 0:
-        # Kana exists -> definitely Japanese
         if eng_count > total * 0.2:
             return "jpn+eng"
         if tra_indicators > sim_indicators:
-            return "jpn+chi_tra"  # Japanese + Trad. Chinese (common in some texts)
+            return "jpn+chi_tra"
         return "jpn"
 
-    # --- Korean: presence of Hangul is a strong signal ---
     if hangul_count > 0:
         if hangul_count / total > 0.3:
             if eng_count > total * 0.2:
                 return "kor+eng"
             return "kor"
-        # Mixed Korean + CJK
         if eng_count > total * 0.2:
             return "kor+eng"
         return "kor"
 
-    # --- Chinese or English (no kana, no hangul) ---
     if cjk_count / total > 0.3:
-        # Primarily CJK -- pick variant
         if tra_indicators > sim_indicators * 1.5:
             return "chi_tra"
         if sim_indicators > tra_indicators * 1.5:
@@ -460,7 +431,6 @@ def detect_language_from_text(text: str) -> str:
         return "chi_tra+chi_sim"
 
     if cjk_count > 0:
-        # Mixed CJK + English
         if tra_indicators > sim_indicators:
             return "eng+chi_tra"
         if sim_indicators > tra_indicators:
@@ -471,12 +441,6 @@ def detect_language_from_text(text: str) -> str:
 
 
 def detect_language_from_pdf(pdf_path: Path) -> str:
-    """Quick-scan PDF to detect language for OCR.
-
-    Supports: English, Traditional Chinese, Simplified Chinese,
-    Japanese (Hiragana, Katakana, Kanji), Korean (Hangul).
-    """
-    # Try existing extracted text first
     check = PDFCheckResult()
     _extract_text_pymupdf(pdf_path, check)
     if check.sample_text and not check.sample_text.startswith("("):
@@ -484,7 +448,6 @@ def detect_language_from_pdf(pdf_path: Path) -> str:
         if detected != ALL_OCR_LANGS:
             return detected
 
-    # Render first page and run quick Tesseract detection
     try:
         import fitz
         import tempfile
@@ -502,7 +465,6 @@ def detect_language_from_pdf(pdf_path: Path) -> str:
             tmp.write(img_bytes)
             tmp_path = tmp.name
         try:
-            # Use all installed languages for the detection pass
             detect_langs = _filter_ocr_languages(ALL_OCR_LANGS)
             r = run(["tesseract", tmp_path, "stdout",
                       "-l", detect_langs, "--psm", "3"], timeout=30)
@@ -552,7 +514,6 @@ def _filter_ocr_languages(requested: str) -> str:
 
 
 def _compress_page_ranges(pages: list[int]) -> str:
-    """Convert [1,2,3,5,7,8,9] to '1-3,5,7-9' for ocrmypdf --pages."""
     if not pages:
         return ""
     sorted_pages = sorted(set(pages))
@@ -572,21 +533,7 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
             dpi: int = 150, pages_to_ocr: list[int] | None = None) -> dict:
     """Run OCR on a PDF to add a searchable text layer.
 
-    CRITICAL DESIGN: preserve original PDF structure, images, and links.
-
-    Uses ocrmypdf with carefully chosen options:
-    - output_type='pdf'   : avoids Ghostscript PDF/A conversion which strips
-                            hyperlinks, bookmarks, TOC, and annotations
-    - skip_text=True      : never re-OCR pages that already have text
-    - pages=<list>        : only process image-only pages, leaving all other
-                            pages completely untouched (bit-for-bit)
-    - NO clean            : unpaper destroys real images/diagrams in ebooks
-    - NO deskew           : ebook pages are digitally straight; deskewing
-                            rotates pages and misaligns text overlay
-    - optimize=0          : no re-encoding of images for maximum fidelity
-
-    After OCR, restores any bookmarks/links/annotations that may have been
-    lost from the processed pages.
+    The input_pdf is NEVER modified. Output always goes to output_pdf.
     """
     try:
         import ocrmypdf
@@ -606,28 +553,20 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
 
     ocr_kwargs = {
         "language": language,
-        "output_type": "pdf",       # NOT pdfa — preserves links & annotations
-        "skip_text": True,           # never re-OCR existing text pages
-        "optimize": 0,               # no image re-encoding for max fidelity
-        "image_dpi": dpi,            # DPI for images without resolution info
+        "output_type": "pdf",
+        "skip_text": True,
+        "optimize": 0,
+        "image_dpi": dpi,
         "progress_bar": False,
         "jobs": min(os.cpu_count() or 1, 4),
-        # Deliberately OMITTED:
-        # - deskew: rotates pages, misaligns text overlay in digital ebooks
-        # - clean:  runs unpaper which destroys real images/diagrams
     }
 
-    # Target only image-only pages if we know which ones need OCR.
-    # Pages NOT in this list are completely untouched — their links,
-    # images, and structure are preserved bit-for-bit.
-    # ocrmypdf accepts pages as a comma-separated string like "1,3,5-7"
     if pages_to_ocr:
         pages_str = _compress_page_ranges(pages_to_ocr)
         ocr_kwargs["pages"] = pages_str
         print(f"  Targeting {len(pages_to_ocr)} image-only page(s): {pages_str}"
               f"\n  All other pages left untouched")
 
-    # Snapshot bookmarks and link annotations before OCR
     original_bookmarks = None
     original_annotations = {}
     try:
@@ -668,13 +607,11 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
     if not output_pdf.exists():
         raise RuntimeError("OCR completed but output file not found")
 
-    # Restore any bookmarks/links/annotations lost during OCR
     try:
         _restore_pdf_metadata(output_pdf, original_bookmarks, original_annotations)
     except Exception as e:
         print(f"  (metadata restoration skipped: {e})")
 
-    # Verify post-OCR
     post_check = PDFCheckResult()
     _extract_text_pymupdf(output_pdf, post_check)
 
@@ -689,27 +626,19 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
 
 
 def _snapshot_pdf_metadata(pdf_path: Path):
-    """Snapshot bookmarks (TOC) and per-page link annotations from a PDF.
-
-    Returns (toc, annotations_dict) where:
-    - toc is the list returned by doc.get_toc()
-    - annotations_dict maps page_index -> list of link annotation dicts
-    """
     try:
         import fitz
     except ImportError:
         return None, {}
 
     doc = fitz.open(str(pdf_path))
-    toc = doc.get_toc(simple=False)  # [level, title, page, dest_dict]
+    toc = doc.get_toc(simple=False)
 
     annotations = {}
     for page_idx in range(len(doc)):
         page = doc[page_idx]
         page_links = []
         for link in page.get_links():
-            # Preserve URI links (kind=2), internal goto (kind=1),
-            # named destinations (kind=4), and goto-remote (kind=5)
             kind = link.get("kind", 0)
             if kind in (1, 2, 4, 5):
                 page_links.append(link)
@@ -721,23 +650,17 @@ def _snapshot_pdf_metadata(pdf_path: Path):
 
 
 def _restore_pdf_metadata(pdf_path: Path, original_toc, original_annotations):
-    """Restore bookmarks and link annotations to an OCR'd PDF.
-
-    Compares the OCR'd output against the original snapshot and adds back
-    any bookmarks or links that were lost during processing.
-    """
     try:
         import fitz
     except ImportError:
         return
 
     if not original_toc and not original_annotations:
-        return  # nothing to restore
+        return
 
     doc = fitz.open(str(pdf_path))
     modified = False
 
-    # Restore TOC / bookmarks if they were lost
     if original_toc:
         current_toc = doc.get_toc()
         if len(current_toc) < len(original_toc):
@@ -748,7 +671,6 @@ def _restore_pdf_metadata(pdf_path: Path, original_toc, original_annotations):
             except Exception as e:
                 print(f"  (TOC restore failed: {e})")
 
-    # Restore link annotations per page
     if original_annotations:
         restored_count = 0
         for page_idx, orig_links in original_annotations.items():
@@ -757,16 +679,12 @@ def _restore_pdf_metadata(pdf_path: Path, original_toc, original_annotations):
             page = doc[page_idx]
             current_links = page.get_links()
 
-            # If OCR'd page has fewer links, some were lost — clear and
-            # re-insert all originals to avoid duplicates
             if len(current_links) < len(orig_links):
-                # Remove existing links first
                 for cl in current_links:
                     try:
                         page.delete_link(cl)
                     except Exception:
                         pass
-                # Re-insert all original links
                 for link in orig_links:
                     try:
                         page.insert_link(link)
@@ -781,9 +699,8 @@ def _restore_pdf_metadata(pdf_path: Path, original_toc, original_annotations):
 
     if modified:
         try:
-            doc.saveIncr()  # incremental save preserves existing structure
+            doc.saveIncr()
         except Exception:
-            # Fallback: full save with minimal processing
             doc.save(str(pdf_path), garbage=0, deflate=False)
     doc.close()
 
@@ -1042,11 +959,7 @@ def verify_epub_links(epub_path):
 
 
 def convert_pipeline(acsm_path, output_dir):
-    """Generator yielding (step, message) tuples.
-
-    PDF path: steps 1-7 (step 7 = OCR if needed)
-    EPUB path: steps 1-6 (no OCR)
-    """
+    """Generator yielding (step, message) tuples."""
     acsm_path = Path(acsm_path).resolve()
     if not acsm_path.exists():
         raise RuntimeError(f"File not found: {acsm_path}")
@@ -1104,7 +1017,6 @@ def convert_pipeline(acsm_path, output_dir):
                 f"PDF scan: 0/{pdf_result.total_pages} pages have extractable text. "
                 f"Image-only PDF detected."
             ))
-            # Pause pipeline — let caller decide whether to OCR
             img_pages = list(range(1, pdf_result.total_pages + 1))
             yield ("ocr_prompt", f"{output_file}|{','.join(str(p) for p in img_pages)}")
 
@@ -1114,7 +1026,6 @@ def convert_pipeline(acsm_path, output_dir):
                 f"PDF scan: {pdf_result.pages_with_text}/{pdf_result.total_pages} pages "
                 f"have text, {img_count} page(s) are image-only."
             ))
-            # Pause pipeline — let caller decide whether to OCR
             yield ("ocr_prompt", f"{output_file}|{','.join(str(p) for p in pdf_result.pages_image_only)}")
 
         else:
@@ -1124,7 +1035,6 @@ def convert_pipeline(acsm_path, output_dir):
             ))
 
     else:
-        # EPUB link verification
         print("Verifying link integrity...")
         link_result = verify_epub_links(output_file)
         if link_result.encrypted_remaining:
@@ -1154,19 +1064,24 @@ def convert_pipeline(acsm_path, output_dir):
 
 
 def run_ocr_step(output_file, pages_image_only):
-    """Run OCR as a standalone step (called when user chooses to OCR).
+    """Run OCR and keep the original PDF alongside the new OCR'd version.
 
-    Yields (step, message) tuples for step 7.
-    Args:
-        output_file: Path to the DRM-free PDF
-        pages_image_only: list of 1-based page numbers that need OCR
+    The original PDF is NEVER deleted. OCR output is saved as <stem>_ocr.pdf.
+
+    Done message format — two files available:
+        "<stem>_ocr.pdf|<ocr_size> MB|<stem>.pdf|<orig_size> MB"
+
+    Done message format — one file (already had text, or OCR failed):
+        "<stem>.pdf|<size> MB"
     """
     output_file = Path(output_file)
     output_dir = output_file.parent
     stem = output_file.stem
 
     print("Running OCR to add text layer...")
+    # Write OCR result to a separate file; never touch the original.
     ocr_output = output_dir / f"{stem}_ocr.pdf"
+
     try:
         ocr_result = run_ocr(
             input_pdf=output_file,
@@ -1175,14 +1090,17 @@ def run_ocr_step(output_file, pages_image_only):
             dpi=150,
             pages_to_ocr=pages_image_only or None,
         )
+
         if ocr_result["status"] == "already_has_text":
             yield (7, (
                 f"OCR skipped -- all pages already have a text layer. "
                 f"Language: {ocr_result['lang_label']}"
             ))
+            # Only the original exists; report it as the single download.
+            orig_size_mb = output_file.stat().st_size / (1024 * 1024)
+            yield ("done", f"{output_file.name}|{orig_size_mb:.1f} MB")
+
         else:
-            output_file.unlink()
-            ocr_output.rename(output_file)
             still_img = ocr_result.get("pages_still_image", 0)
             text_pages = ocr_result.get("pages_with_text", 0)
             total = ocr_result.get("pages_total", 0)
@@ -1197,14 +1115,22 @@ def run_ocr_step(output_file, pages_image_only):
                     f"OCR complete ({ocr_result['lang_label']}): "
                     f"all {total} pages now have readable, searchable text."
                 ))
+
+            # Both files exist. Report both so the UI offers two downloads.
+            ocr_size_mb = ocr_output.stat().st_size / (1024 * 1024) if ocr_output.exists() else 0
+            orig_size_mb = output_file.stat().st_size / (1024 * 1024) if output_file.exists() else 0
+            yield ("done", (
+                f"{ocr_output.name}|{ocr_size_mb:.1f} MB"
+                f"|{output_file.name}|{orig_size_mb:.1f} MB"
+            ))
+
     except RuntimeError as e:
         if ocr_output.exists():
             ocr_output.unlink()
         yield (7, f"OCR failed: {e}. PDF available without text layer.")
-
-    # Done
-    size_mb = output_file.stat().st_size / (1024 * 1024) if output_file.exists() else 0
-    yield ("done", f"{output_file.name}|{size_mb:.1f} MB")
+        # OCR failed; the original is still intact — serve it as the only download.
+        orig_size_mb = output_file.stat().st_size / (1024 * 1024) if output_file.exists() else 0
+        yield ("done", f"{output_file.name}|{orig_size_mb:.1f} MB")
 
 
 def do_convert(acsm_file, output_dir):
@@ -1213,8 +1139,9 @@ def do_convert(acsm_file, output_dir):
             if step == "done":
                 parts = message.split("|")
                 print(f"\n=== Done! ===\nFile: {parts[0]} ({parts[1]})")
+                if len(parts) >= 4:
+                    print(f"Original: {parts[2]} ({parts[3]})")
             elif step == "ocr_prompt":
-                # CLI mode: ask user
                 parts = message.split("|")
                 pdf_path = parts[0]
                 pages = [int(p) for p in parts[1].split(",")]
@@ -1224,6 +1151,8 @@ def do_convert(acsm_file, output_dir):
                         if s == "done":
                             p = m.split("|")
                             print(f"\n=== Done! ===\nFile: {p[0]} ({p[1]})")
+                            if len(p) >= 4:
+                                print(f"Original: {p[2]} ({p[3]})")
                         else:
                             print(f"\n=== Step {s}: {m} ===")
                 else:

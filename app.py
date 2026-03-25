@@ -41,7 +41,6 @@ STEP_LABELS = {
     7: "Running OCR (if needed)...",
 }
 
-# Track active conversions: job_id -> {steps: [...], status, error}
 active_jobs = {}
 
 
@@ -93,16 +92,14 @@ def extract_epub_cover(epub_path):
 
 
 def extract_pdf_cover(pdf_path):
-    """Try to extract the first page of a PDF as a cover thumbnail."""
     cover_out = COVER_DIR / f"{pdf_path.stem}.jpg"
     if cover_out.exists():
         return cover_out.name
     try:
-        import fitz  # PyMuPDF
+        import fitz
         doc = fitz.open(str(pdf_path))
         if len(doc) > 0:
             page = doc[0]
-            # Render at a moderate resolution
             mat = fitz.Matrix(1.5, 1.5)
             pix = page.get_pixmap(matrix=mat)
             pix.save(str(cover_out))
@@ -162,27 +159,33 @@ def get_books():
     for f in sorted(OUTPUT_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
         if f.suffix in (".epub", ".pdf"):
             stem = f.stem
-            if stem not in books:
-                books[stem] = {"stem": stem, "files": [], "cover": None}
+            # Group OCR variants (stem_ocr) with their original (stem)
+            base_stem = stem[:-4] if stem.endswith("_ocr") else stem
+            if base_stem not in books:
+                books[base_stem] = {"stem": base_stem, "files": [], "cover": None}
             size_mb = f.stat().st_size / (1024 * 1024)
             ext_label = f.suffix[1:].upper()
-            books[stem]["files"].append({
+            is_ocr = stem.endswith("_ocr")
+            books[base_stem]["files"].append({
                 "name": f.name,
                 "size": f"{size_mb:.1f} MB",
                 "ext": ext_label,
+                "ocr": is_ocr,
             })
-            if not books[stem]["cover"]:
+            if not books[base_stem]["cover"]:
                 if f.suffix == ".epub":
                     cover = extract_epub_cover(f)
                 else:
                     cover = extract_pdf_cover(f)
                 if cover:
-                    books[stem]["cover"] = cover
+                    books[base_stem]["cover"] = cover
+    # Sort each book's files: OCR version first, then original
+    for book in books.values():
+        book["files"].sort(key=lambda x: (not x["ocr"], x["name"]))
     return list(books.values())
 
 
 def run_conversion_job(job_id, acsm_path, output_dir):
-    """Run conversion in a background thread, updating active_jobs."""
     import traceback
     job = active_jobs[job_id]
     print(f"[DEBUG] Job {job_id} started: acsm={acsm_path}, output={output_dir}", flush=True)
@@ -197,7 +200,6 @@ def run_conversion_job(job_id, acsm_path, output_dir):
                 job["status"] = "done"
                 job["done_message"] = message
             elif step == "ocr_prompt":
-                # Pause — let user decide whether to run OCR
                 parts = message.split("|")
                 job["ocr_pdf_path"] = parts[0]
                 job["ocr_pages"] = parts[1]
@@ -205,7 +207,7 @@ def run_conversion_job(job_id, acsm_path, output_dir):
                 job["current_step"] = 7
                 job["current_label"] = "Waiting for your decision..."
                 print(f"[DEBUG] Job {job_id} paused for OCR decision", flush=True)
-                return  # stop the pipeline here
+                return
             else:
                 step_num = int(step)
                 is_warning = (
@@ -232,7 +234,6 @@ def run_conversion_job(job_id, acsm_path, output_dir):
 
 
 def run_ocr_job(job_id):
-    """Run OCR step in a background thread after user confirms."""
     import traceback
     job = active_jobs[job_id]
     pdf_path = job["ocr_pdf_path"]
@@ -290,7 +291,6 @@ def upload():
 @app.route("/start-convert/<filename>", methods=["POST"])
 @login_required
 def start_convert(filename):
-    """Start conversion in background, return a job ID for polling."""
     filename = Path(filename).name
     acsm_path = UPLOAD_DIR / filename
 
@@ -324,7 +324,6 @@ def start_convert(filename):
 @app.route("/job-status/<job_id>")
 @login_required
 def job_status(job_id):
-    """Poll endpoint: returns current conversion progress."""
     if job_id not in active_jobs:
         return jsonify({"error": "Job not found"}), 404
 
@@ -341,7 +340,6 @@ def job_status(job_id):
         "elapsed": elapsed,
     }
 
-    # Include OCR info when waiting for user decision
     if job["status"] == "pending_ocr":
         pdf_path = job.get("ocr_pdf_path", "")
         pages_str = job.get("ocr_pages", "")
@@ -357,7 +355,6 @@ def job_status(job_id):
 @app.route("/ocr-decision/<job_id>", methods=["POST"])
 @login_required
 def ocr_decision(job_id):
-    """User decides whether to run OCR or skip."""
     if job_id not in active_jobs:
         return jsonify({"error": "Job not found"}), 404
 
@@ -369,30 +366,26 @@ def ocr_decision(job_id):
     choice = data.get("choice", "skip")
 
     if choice == "ocr":
-        # Run OCR in background thread
-        t = threading.Thread(
-            target=run_ocr_job,
-            args=(job_id,),
-            daemon=True,
-        )
+        t = threading.Thread(target=run_ocr_job, args=(job_id,), daemon=True)
         t.start()
         return jsonify({"status": "ocr_started"})
 
     else:
-        # Skip OCR — mark as done with current file
+        # Skip OCR — original PDF is already saved on disk, just mark done
         pdf_path = Path(job.get("ocr_pdf_path", ""))
         size_mb = pdf_path.stat().st_size / (1024 * 1024) if pdf_path.exists() else 0
         done_msg = f"{pdf_path.name}|{size_mb:.1f} MB"
 
         job["steps"].append({
             "step": 7,
-            "message": "OCR skipped by user -- PDF downloaded as image-only.",
+            "message": "OCR skipped by user -- PDF saved as image-only.",
             "warning": False,
         })
         job["steps"].append({"step": "done", "message": done_msg})
         job["status"] = "done"
         job["done_message"] = done_msg
-        return jsonify({"status": "skipped"})
+        # Return done_message directly so the client shows the download immediately
+        return jsonify({"status": "skipped", "done_message": done_msg})
 
 
 @app.route("/download/<filename>")
@@ -407,13 +400,20 @@ def download(filename):
     @resp.call_on_close
     def cleanup():
         stem = Path(filename).stem
-        try:
-            file_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        base_stem = stem[:-4] if stem.endswith("_ocr") else stem
+        # Delete both the original and any _ocr sibling so neither is left
+        # dangling regardless of which one the user chose to download first.
+        paired_stems = {base_stem, f"{base_stem}_ocr"}
+        for f in list(OUTPUT_DIR.iterdir()):
+            if f.stem in paired_stems and f.suffix in (".pdf", ".epub"):
+                try:
+                    f.unlink(missing_ok=True)
+                except Exception:
+                    pass
         for d in (UPLOAD_DIR, COVER_DIR):
             for f in d.iterdir():
-                if f.stem == stem or f.stem.startswith(stem):
+                f_base = f.stem[:-4] if f.stem.endswith("_ocr") else f.stem
+                if f_base == base_stem:
                     try:
                         f.unlink(missing_ok=True)
                     except Exception:
@@ -432,7 +432,6 @@ def cover(filename):
 @app.route("/debug-status")
 @login_required
 def debug_status():
-    """Debug endpoint to check server state."""
     import shutil
     jobs_summary = {}
     for jid, job in active_jobs.items():
