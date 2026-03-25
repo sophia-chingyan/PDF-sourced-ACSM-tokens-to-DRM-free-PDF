@@ -1092,6 +1092,15 @@ def run_ocr_step(output_file, pages_image_only):
         )
 
         if ocr_result["status"] == "already_has_text":
+            # BUG 2 FIX: When ocrmypdf raises PriorOcrFoundError, run_ocr() calls
+            # shutil.copy2(input_pdf, output_pdf), silently creating ocr_output on
+            # disk even though it's not needed.  That dangling _ocr.pdf would appear
+            # as a spurious "OCR" entry in the library.  Delete it here.
+            if ocr_output.exists():
+                try:
+                    ocr_output.unlink()
+                except Exception:
+                    pass
             yield (7, (
                 f"OCR skipped -- all pages already have a text layer. "
                 f"Language: {ocr_result['lang_label']}"

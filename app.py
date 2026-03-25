@@ -42,6 +42,7 @@ STEP_LABELS = {
 }
 
 active_jobs = {}
+_active_jobs_lock = threading.Lock()
 
 
 def login_required(f):
@@ -161,6 +162,8 @@ def get_books():
             stem = f.stem
             # Group OCR variants (stem_ocr) with their original (stem)
             base_stem = stem[:-4] if stem.endswith("_ocr") else stem
+            if not base_stem:
+                continue  # guard against a file literally named "_ocr.pdf"
             if base_stem not in books:
                 books[base_stem] = {"stem": base_stem, "files": [], "cover": None}
             size_mb = f.stat().st_size / (1024 * 1024)
@@ -183,6 +186,22 @@ def get_books():
     for book in books.values():
         book["files"].sort(key=lambda x: (not x["ocr"], x["name"]))
     return list(books.values())
+
+
+def _prune_old_jobs():
+    """Remove completed/errored jobs older than 2 hours to prevent memory growth.
+
+    BUG 3 FIX: active_jobs was never pruned, growing unboundedly over the
+    lifetime of the process.  Prune on each new conversion request.
+    """
+    cutoff = time.time() - 7200  # 2 hours
+    with _active_jobs_lock:
+        stale = [
+            jid for jid, job in active_jobs.items()
+            if job["status"] in ("done", "error") and job["start_time"] < cutoff
+        ]
+        for jid in stale:
+            del active_jobs[jid]
 
 
 def run_conversion_job(job_id, acsm_path, output_dir):
@@ -210,8 +229,14 @@ def run_conversion_job(job_id, acsm_path, output_dir):
                 return
             else:
                 step_num = int(step)
+                # BUG 1 FIX: Step 6 "image-only" messages are *informational* (OCR is about
+                # to be offered), not actual warnings.  Flagging them as warnings caused
+                # hadWarning=true in the frontend, so the done screen always showed
+                # "Conversion Complete (with warnings)" in orange even when OCR subsequently
+                # succeeded perfectly.  Only flag step 6 as a warning for genuinely broken
+                # EPUB links; "image-only" is purely informational.
                 is_warning = (
-                    (step_num == 6 and ("broken" in message.lower() or "image-only" in message.lower()))
+                    (step_num == 6 and "broken" in message.lower())
                     or (step_num == 7 and ("failed" in message.lower() or "could not" in message.lower()))
                 )
                 job["steps"].append({
@@ -237,7 +262,8 @@ def run_ocr_job(job_id):
     import traceback
     job = active_jobs[job_id]
     pdf_path = job["ocr_pdf_path"]
-    pages = [int(p) for p in job["ocr_pages"].split(",")]
+    # Guard against empty strings from a malformed ocr_pages value
+    pages = [int(p) for p in job["ocr_pages"].split(",") if p.strip()]
 
     print(f"[DEBUG] Job {job_id} OCR started: pdf={pdf_path}, pages={len(pages)}", flush=True)
     try:
@@ -291,6 +317,8 @@ def upload():
 @app.route("/start-convert/<filename>", methods=["POST"])
 @login_required
 def start_convert(filename):
+    _prune_old_jobs()  # BUG 3 FIX: keep active_jobs bounded
+
     filename = Path(filename).name
     acsm_path = UPLOAD_DIR / filename
 
@@ -401,6 +429,8 @@ def download(filename):
     def cleanup():
         stem = Path(filename).stem
         base_stem = stem[:-4] if stem.endswith("_ocr") else stem
+        if not base_stem:
+            return
         # Delete both the original and any _ocr sibling so neither is left
         # dangling regardless of which one the user chose to download first.
         paired_stems = {base_stem, f"{base_stem}_ocr"}
