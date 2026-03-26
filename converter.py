@@ -1019,6 +1019,12 @@ def convert_pipeline(acsm_path, output_dir):
             ))
             img_pages = list(range(1, pdf_result.total_pages + 1))
             yield ("ocr_prompt", f"{output_file}|{','.join(str(p) for p in img_pages)}")
+            # ── BUG 2 FIX ──────────────────────────────────────────────
+            # Stop the generator here.  Without this return the generator
+            # falls through to the final "done" yield below, producing a
+            # spurious completion message before OCR has even started.
+            return
+            # ────────────────────────────────────────────────────────────
 
         elif pdf_result.needs_ocr:
             img_count = len(pdf_result.pages_image_only)
@@ -1027,6 +1033,9 @@ def convert_pipeline(acsm_path, output_dir):
                 f"have text, {img_count} page(s) are image-only."
             ))
             yield ("ocr_prompt", f"{output_file}|{','.join(str(p) for p in pdf_result.pages_image_only)}")
+            # ── BUG 2 FIX (same pattern for partial-OCR branch) ────────
+            return
+            # ────────────────────────────────────────────────────────────
 
         else:
             yield (6, (
@@ -1092,10 +1101,6 @@ def run_ocr_step(output_file, pages_image_only):
         )
 
         if ocr_result["status"] == "already_has_text":
-            # BUG 2 FIX: When ocrmypdf raises PriorOcrFoundError, run_ocr() calls
-            # shutil.copy2(input_pdf, output_pdf), silently creating ocr_output on
-            # disk even though it's not needed.  That dangling _ocr.pdf would appear
-            # as a spurious "OCR" entry in the library.  Delete it here.
             if ocr_output.exists():
                 try:
                     ocr_output.unlink()
@@ -1105,7 +1110,6 @@ def run_ocr_step(output_file, pages_image_only):
                 f"OCR skipped -- all pages already have a text layer. "
                 f"Language: {ocr_result['lang_label']}"
             ))
-            # Only the original exists; report it as the single download.
             orig_size_mb = output_file.stat().st_size / (1024 * 1024)
             yield ("done", f"{output_file.name}|{orig_size_mb:.1f} MB")
 
@@ -1125,7 +1129,6 @@ def run_ocr_step(output_file, pages_image_only):
                     f"all {total} pages now have readable, searchable text."
                 ))
 
-            # Both files exist. Report both so the UI offers two downloads.
             ocr_size_mb = ocr_output.stat().st_size / (1024 * 1024) if ocr_output.exists() else 0
             orig_size_mb = output_file.stat().st_size / (1024 * 1024) if output_file.exists() else 0
             yield ("done", (
@@ -1137,7 +1140,6 @@ def run_ocr_step(output_file, pages_image_only):
         if ocr_output.exists():
             ocr_output.unlink()
         yield (7, f"OCR failed: {e}. PDF available without text layer.")
-        # OCR failed; the original is still intact — serve it as the only download.
         orig_size_mb = output_file.stat().st_size / (1024 * 1024) if output_file.exists() else 0
         yield ("done", f"{output_file.name}|{orig_size_mb:.1f} MB")
 

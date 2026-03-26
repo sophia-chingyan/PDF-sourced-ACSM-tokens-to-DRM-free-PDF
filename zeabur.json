@@ -1,0 +1,32 @@
+{
+    "$schema": "https://schema.zeabur.app/template.json",
+    "build": {
+        "type": "dockerfile",
+        "dockerfile": "Dockerfile"
+    },
+    "env": {
+        "SECRET_KEY": {
+            "description": "Flask session secret key. Set a fixed value to persist sessions across restarts.",
+            "required": true,
+            "generate": "SECRET"
+        },
+        "APP_PASSWORD": {
+            "description": "Optional password to protect the web interface. Leave empty for no auth.",
+            "required": false
+        }
+    },
+    "volumes": [
+        {
+            "id": "ebook-output",
+            "dir": "/app/output"
+        },
+        {
+            "id": "ebook-covers",
+            "dir": "/app/covers"
+        },
+        {
+            "id": "adobe-device",
+            "dir": "/root/.config/adept"
+        }
+    ]
+}

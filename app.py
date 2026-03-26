@@ -44,6 +44,14 @@ STEP_LABELS = {
 active_jobs = {}
 _active_jobs_lock = threading.Lock()
 
+# ── BUG 1 FIX ────────────────────────────────────────────────────────────
+# Track which files in a paired set (stem.pdf + stem_ocr.pdf) have been
+# downloaded.  Only delete the pair once BOTH have been fetched, or after
+# a timeout (cleanup thread handles the timeout case).
+_downloaded_tracker = {}        # base_stem -> set of downloaded filenames
+_downloaded_tracker_lock = threading.Lock()
+# ─────────────────────────────────────────────────────────────────────────
+
 
 def login_required(f):
     @wraps(f)
@@ -189,11 +197,7 @@ def get_books():
 
 
 def _prune_old_jobs():
-    """Remove completed/errored jobs older than 2 hours to prevent memory growth.
-
-    BUG 3 FIX: active_jobs was never pruned, growing unboundedly over the
-    lifetime of the process.  Prune on each new conversion request.
-    """
+    """Remove completed/errored jobs older than 2 hours to prevent memory growth."""
     cutoff = time.time() - 7200  # 2 hours
     with _active_jobs_lock:
         stale = [
@@ -206,7 +210,10 @@ def _prune_old_jobs():
 
 def run_conversion_job(job_id, acsm_path, output_dir):
     import traceback
-    job = active_jobs[job_id]
+
+    with _active_jobs_lock:
+        job = active_jobs[job_id]
+
     print(f"[DEBUG] Job {job_id} started: acsm={acsm_path}, output={output_dir}", flush=True)
     try:
         job["current_step"] = 1
@@ -229,12 +236,6 @@ def run_conversion_job(job_id, acsm_path, output_dir):
                 return
             else:
                 step_num = int(step)
-                # BUG 1 FIX: Step 6 "image-only" messages are *informational* (OCR is about
-                # to be offered), not actual warnings.  Flagging them as warnings caused
-                # hadWarning=true in the frontend, so the done screen always showed
-                # "Conversion Complete (with warnings)" in orange even when OCR subsequently
-                # succeeded perfectly.  Only flag step 6 as a warning for genuinely broken
-                # EPUB links; "image-only" is purely informational.
                 is_warning = (
                     (step_num == 6 and "broken" in message.lower())
                     or (step_num == 7 and ("failed" in message.lower() or "could not" in message.lower()))
@@ -260,7 +261,10 @@ def run_conversion_job(job_id, acsm_path, output_dir):
 
 def run_ocr_job(job_id):
     import traceback
-    job = active_jobs[job_id]
+
+    with _active_jobs_lock:
+        job = active_jobs[job_id]
+
     pdf_path = job["ocr_pdf_path"]
     # Guard against empty strings from a malformed ocr_pages value
     pages = [int(p) for p in job["ocr_pages"].split(",") if p.strip()]
@@ -317,7 +321,7 @@ def upload():
 @app.route("/start-convert/<filename>", methods=["POST"])
 @login_required
 def start_convert(filename):
-    _prune_old_jobs()  # BUG 3 FIX: keep active_jobs bounded
+    _prune_old_jobs()
 
     filename = Path(filename).name
     acsm_path = UPLOAD_DIR / filename
@@ -326,18 +330,19 @@ def start_convert(filename):
         return jsonify({"error": "File not found"}), 404
 
     job_id = f"{filename}_{int(time.time())}"
-    active_jobs[job_id] = {
-        "filename": filename,
-        "status": "running",
-        "steps": [],
-        "current_step": 0,
-        "current_label": "",
-        "error": None,
-        "done_message": None,
-        "start_time": time.time(),
-        "ocr_pdf_path": None,
-        "ocr_pages": None,
-    }
+    with _active_jobs_lock:
+        active_jobs[job_id] = {
+            "filename": filename,
+            "status": "running",
+            "steps": [],
+            "current_step": 0,
+            "current_label": "",
+            "error": None,
+            "done_message": None,
+            "start_time": time.time(),
+            "ocr_pdf_path": None,
+            "ocr_pages": None,
+        }
 
     t = threading.Thread(
         target=run_conversion_job,
@@ -352,10 +357,11 @@ def start_convert(filename):
 @app.route("/job-status/<job_id>")
 @login_required
 def job_status(job_id):
-    if job_id not in active_jobs:
-        return jsonify({"error": "Job not found"}), 404
+    with _active_jobs_lock:
+        if job_id not in active_jobs:
+            return jsonify({"error": "Job not found"}), 404
+        job = active_jobs[job_id]
 
-    job = active_jobs[job_id]
     elapsed = round(time.time() - job["start_time"])
 
     resp_data = {
@@ -383,10 +389,11 @@ def job_status(job_id):
 @app.route("/ocr-decision/<job_id>", methods=["POST"])
 @login_required
 def ocr_decision(job_id):
-    if job_id not in active_jobs:
-        return jsonify({"error": "Job not found"}), 404
+    with _active_jobs_lock:
+        if job_id not in active_jobs:
+            return jsonify({"error": "Job not found"}), 404
+        job = active_jobs[job_id]
 
-    job = active_jobs[job_id]
     if job["status"] != "pending_ocr":
         return jsonify({"error": "Job is not waiting for OCR decision"}), 400
 
@@ -412,27 +419,33 @@ def ocr_decision(job_id):
         job["steps"].append({"step": "done", "message": done_msg})
         job["status"] = "done"
         job["done_message"] = done_msg
-        # Return done_message directly so the client shows the download immediately
         return jsonify({"status": "skipped", "done_message": done_msg})
 
 
-@app.route("/download/<filename>")
-@login_required
-def download(filename):
-    filename = Path(filename).name
-    file_path = OUTPUT_DIR / filename
-    if not file_path.exists():
-        return {"error": "File not found"}, 404
-    resp = send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
+# ── BUG 1 + BUG 4 FIX ────────────────────────────────────────────────────
+# Instead of deleting files inside call_on_close (which races with the
+# proxy transfer), we use a delayed background cleanup:
+#   • Record each download in _downloaded_tracker[base_stem].
+#   • When ALL files for that stem have been downloaded, schedule deletion
+#     60 seconds later (giving proxies time to finish streaming).
+#   • Also schedule a 2-hour fallback cleanup so abandoned files don't
+#     accumulate forever.
+# ──────────────────────────────────────────────────────────────────────────
 
-    @resp.call_on_close
-    def cleanup():
-        stem = Path(filename).stem
-        base_stem = stem[:-4] if stem.endswith("_ocr") else stem
-        if not base_stem:
-            return
-        # Delete both the original and any _ocr sibling so neither is left
-        # dangling regardless of which one the user chose to download first.
+def _find_sibling_files(base_stem):
+    """Return set of filenames on disk for a given base stem."""
+    siblings = set()
+    paired_stems = {base_stem, f"{base_stem}_ocr"}
+    for f in OUTPUT_DIR.iterdir():
+        if f.stem in paired_stems and f.suffix in (".pdf", ".epub"):
+            siblings.add(f.name)
+    return siblings
+
+
+def _delayed_cleanup(base_stem, delay_seconds=60):
+    """Delete all files for base_stem after a delay."""
+    def _do_cleanup():
+        time.sleep(delay_seconds)
         paired_stems = {base_stem, f"{base_stem}_ocr"}
         for f in list(OUTPUT_DIR.iterdir()):
             if f.stem in paired_stems and f.suffix in (".pdf", ".epub"):
@@ -448,8 +461,63 @@ def download(filename):
                         f.unlink(missing_ok=True)
                     except Exception:
                         pass
+        # Clean up tracker entry
+        with _downloaded_tracker_lock:
+            _downloaded_tracker.pop(base_stem, None)
 
-    return resp
+    t = threading.Thread(target=_do_cleanup, daemon=True)
+    t.start()
+
+
+@app.route("/download/<filename>")
+@login_required
+def download(filename):
+    filename = Path(filename).name
+    file_path = OUTPUT_DIR / filename
+    if not file_path.exists():
+        return {"error": "File not found"}, 404
+
+    stem = Path(filename).stem
+    base_stem = stem[:-4] if stem.endswith("_ocr") else stem
+    if not base_stem:
+        return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
+
+    # Track this download
+    with _downloaded_tracker_lock:
+        if base_stem not in _downloaded_tracker:
+            _downloaded_tracker[base_stem] = set()
+        _downloaded_tracker[base_stem].add(filename)
+        downloaded = _downloaded_tracker[base_stem].copy()
+
+    # Check what files exist on disk for this stem
+    all_siblings = _find_sibling_files(base_stem)
+
+    # If all siblings have been downloaded, schedule delayed cleanup
+    if all_siblings and all_siblings.issubset(downloaded):
+        _delayed_cleanup(base_stem, delay_seconds=60)
+
+    return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
+
+
+@app.route("/delete/<stem>", methods=["POST"])
+@login_required
+def delete_book(stem):
+    """Manually delete a book and all its variants (for library management)."""
+    stem = Path(stem).stem  # sanitise
+    if not stem:
+        return jsonify({"error": "Invalid stem"}), 400
+    paired_stems = {stem, f"{stem}_ocr"}
+    deleted = []
+    for f in list(OUTPUT_DIR.iterdir()):
+        if f.stem in paired_stems and f.suffix in (".pdf", ".epub"):
+            f.unlink(missing_ok=True)
+            deleted.append(f.name)
+    for d in (UPLOAD_DIR, COVER_DIR):
+        for f in d.iterdir():
+            f_base = f.stem[:-4] if f.stem.endswith("_ocr") else f.stem
+            if f_base == stem:
+                f.unlink(missing_ok=True)
+    return jsonify({"deleted": deleted})
 
 
 @app.route("/cover/<filename>")
@@ -464,14 +532,15 @@ def cover(filename):
 def debug_status():
     import shutil
     jobs_summary = {}
-    for jid, job in active_jobs.items():
-        jobs_summary[jid] = {
-            "status": job["status"],
-            "steps_count": len(job["steps"]),
-            "current_step": job["current_step"],
-            "error": job["error"],
-            "elapsed": round(time.time() - job["start_time"]),
-        }
+    with _active_jobs_lock:
+        for jid, job in active_jobs.items():
+            jobs_summary[jid] = {
+                "status": job["status"],
+                "steps_count": len(job["steps"]),
+                "current_step": job["current_step"],
+                "error": job["error"],
+                "elapsed": round(time.time() - job["start_time"]),
+            }
     upload_files = [f.name for f in UPLOAD_DIR.iterdir()] if UPLOAD_DIR.exists() else []
     output_files = [f.name for f in OUTPUT_DIR.iterdir()] if OUTPUT_DIR.exists() else []
     return jsonify({
