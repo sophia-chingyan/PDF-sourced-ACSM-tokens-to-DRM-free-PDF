@@ -308,6 +308,17 @@ def index():
     return resp
 
 
+# ── NEW: Library management page ──────────────────────────────────────────
+@app.route("/library")
+@login_required
+def library():
+    books = get_books()
+    resp = make_response(render_template("library.html", books=books))
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
+# ─────────────────────────────────────────────────────────────────────────
+
+
 @app.route("/upload", methods=["POST"])
 @login_required
 def upload():
@@ -427,15 +438,6 @@ def ocr_decision(job_id):
 
 
 # ── BUG 1 + BUG 4 FIX ────────────────────────────────────────────────────
-# Instead of deleting files inside call_on_close (which races with the
-# proxy transfer), we use a delayed background cleanup:
-#   • Record each download in _downloaded_tracker[base_stem].
-#   • When ALL files for that stem have been downloaded, schedule deletion
-#     60 seconds later (giving proxies time to finish streaming).
-#   • Also schedule a 2-hour fallback cleanup so abandoned files don't
-#     accumulate forever.
-# ──────────────────────────────────────────────────────────────────────────
-
 def _find_sibling_files(base_stem):
     """Return set of filenames on disk for a given base stem."""
     siblings = set()
@@ -465,7 +467,6 @@ def _delayed_cleanup(base_stem, delay_seconds=60):
                         f.unlink(missing_ok=True)
                     except Exception:
                         pass
-        # Clean up tracker entry
         with _downloaded_tracker_lock:
             _downloaded_tracker.pop(base_stem, None)
 
@@ -486,17 +487,14 @@ def download(filename):
     if not base_stem:
         return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
 
-    # Track this download
     with _downloaded_tracker_lock:
         if base_stem not in _downloaded_tracker:
             _downloaded_tracker[base_stem] = set()
         _downloaded_tracker[base_stem].add(filename)
         downloaded = _downloaded_tracker[base_stem].copy()
 
-    # Check what files exist on disk for this stem
     all_siblings = _find_sibling_files(base_stem)
 
-    # If all siblings have been downloaded, schedule delayed cleanup
     if all_siblings and all_siblings.issubset(downloaded):
         _delayed_cleanup(base_stem, delay_seconds=60)
 
