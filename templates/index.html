@@ -17,10 +17,35 @@
             color: #fff;
             padding: 2.5rem 0;
             margin-bottom: 2rem;
-            text-align: center;
         }
-        header.hero h1 { color: #fff; margin-bottom: 0.25rem; }
-        header.hero p { color: #a0b4cc; margin: 0; }
+        .hero-inner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+        .hero-title { text-align: left; }
+        .hero-title h1 { color: #fff; margin-bottom: 0.25rem; }
+        .hero-title p { color: #a0b4cc; margin: 0; }
+        .hero-nav a {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.5rem 1.1rem;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            text-decoration: none;
+            color: rgba(255,255,255,0.85);
+            border: 1px solid rgba(255,255,255,0.3);
+            transition: all 0.2s;
+        }
+        .hero-nav a:hover {
+            background: rgba(255,255,255,0.13);
+            color: #fff;
+            border-color: rgba(255,255,255,0.6);
+        }
 
         .upload-box {
             background: #fff;
@@ -111,6 +136,31 @@
         }
         .btn-dl:hover { background: var(--accent-hover); color: #fff; }
 
+        .library-banner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+        }
+        .library-banner h3 { margin: 0; }
+        .btn-library {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.4rem 0.9rem;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-decoration: none;
+            color: var(--accent);
+            border: 1.5px solid var(--accent);
+            transition: all 0.2s;
+        }
+        .btn-library:hover {
+            background: var(--accent);
+            color: #fff;
+        }
+
         @keyframes spin { to { transform: rotate(360deg); } }
         .step { padding: 0.3rem 0; font-size: 0.95rem; }
         .step[data-status="active"] { font-weight: bold; }
@@ -190,7 +240,6 @@
         .link-warning-box strong { color: #e65100; }
         .done-actions { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
 
-        /* Primary download button (OCR / main file) */
         .btn-dl-primary {
             display: inline-flex;
             align-items: center;
@@ -207,7 +256,6 @@
         }
         .btn-dl-primary:hover { background: #2e7d32; color: #fff; }
 
-        /* Secondary download button (original image-only PDF) */
         .btn-dl-secondary {
             display: inline-flex;
             align-items: center;
@@ -251,8 +299,15 @@
 <body>
     <header class="hero">
         <div class="container">
-            <h1>ACSM Converter</h1>
-            <p>Convert ACSM tokens to DRM-free EPUB or PDF — with automatic OCR (EN / 繁中 / 简中 / 日本語 / 한국어)</p>
+            <div class="hero-inner">
+                <div class="hero-title">
+                    <h1>ACSM Converter</h1>
+                    <p>Convert ACSM tokens to DRM-free EPUB or PDF — with automatic OCR (EN / 繁中 / 简中 / 日本語 / 한국어)</p>
+                </div>
+                <nav class="hero-nav">
+                    <a href="/library">📚 My Library</a>
+                </nav>
+            </div>
         </div>
     </header>
 
@@ -322,7 +377,10 @@
 
         {% if books %}
         <section>
-            <h3>Previously Converted</h3>
+            <div class="library-banner">
+                <h3>Previously Converted</h3>
+                <a href="/library" class="btn-library">📚 Manage Library →</a>
+            </div>
             <div class="book-grid">
                 {% for book in books %}
                 <article class="book-card">
@@ -565,12 +623,10 @@
             ocrChoiceSection.style.display = 'none';
 
             if (choice === 'ocr') {
-                // Show progress section and poll until OCR finishes
                 progressSection.style.display = 'block';
                 showActiveStep(7, 'Running OCR...');
                 startPolling(activeJobId);
             } else {
-                // Skip: server returns done_message immediately — no polling needed
                 if (responseData && responseData.done_message) {
                     showDone(responseData.done_message);
                 } else {
@@ -620,14 +676,6 @@
             });
         }
 
-        /**
-         * Show the done section.
-         *
-         * done message format (pipe-separated):
-         *   Single file:  "filename.pdf|1.2 MB"
-         *   Two files:    "filename_ocr.pdf|1.5 MB|filename.pdf|1.2 MB"
-         *                  ^^^^ primary (OCR) ^^^^  ^^^ secondary (original) ^^^
-         */
         function showDone(message) {
             const parts = message.split('|');
             const primaryFilename = parts[0];
@@ -640,7 +688,6 @@
             setTimeout(() => {
                 progressSection.style.display = 'none';
 
-                // Build subtitle
                 if (secondaryFilename) {
                     doneSubtitle.textContent =
                         'Searchable PDF: ' + primaryFilename + ' (' + primarySize + ')  •  ' +
@@ -649,17 +696,14 @@
                     doneSubtitle.textContent = primaryFilename + ' (' + primarySize + ')';
                 }
 
-                // Build action buttons
                 doneActions.innerHTML = '';
 
-                // Primary download button
                 const btnPrimary = document.createElement('a');
                 btnPrimary.className = 'btn-dl-primary';
                 btnPrimary.href = '/download/' + encodeURIComponent(primaryFilename);
                 btnPrimary.textContent = '⬇ Download ' + (isPDF ? (secondaryFilename ? 'Searchable PDF' : 'PDF') : 'EPUB');
                 doneActions.appendChild(btnPrimary);
 
-                // Secondary download button (original image PDF) if present
                 if (secondaryFilename) {
                     const btnSecondary = document.createElement('a');
                     btnSecondary.className = 'btn-dl-secondary';
@@ -668,7 +712,6 @@
                     doneActions.appendChild(btnSecondary);
                 }
 
-                // "Convert another" button
                 const btnAnother = document.createElement('button');
                 btnAnother.className = 'btn-another';
                 btnAnother.textContent = 'Convert another file';
