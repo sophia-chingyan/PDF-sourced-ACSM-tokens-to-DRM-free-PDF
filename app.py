@@ -238,7 +238,9 @@ def run_conversion_job(job_id, acsm_path, output_dir):
                 step_num = int(step)
                 is_warning = (
                     (step_num == 6 and "broken" in message.lower())
-                    or (step_num == 7 and ("failed" in message.lower() or "could not" in message.lower()))
+                    or (step_num == 7 and ("failed" in message.lower()
+                                           or "could not" in message.lower()
+                                           or message.lower().startswith("warning:")))
                 )
                 job["steps"].append({
                     "step": step_num,
@@ -283,7 +285,9 @@ def run_ocr_job(job_id):
                 job["done_message"] = message
             else:
                 step_num = int(step)
-                is_warning = "failed" in message.lower() or "could not" in message.lower()
+                is_warning = ("failed" in message.lower()
+                              or "could not" in message.lower()
+                              or message.lower().startswith("warning:"))
                 job["steps"].append({
                     "step": step_num,
                     "message": message,

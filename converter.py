@@ -440,7 +440,80 @@ def detect_language_from_text(text: str) -> str:
     return "eng"
 
 
+def _detect_script_from_image(tmp_path: str) -> str:
+    """Use tesseract OSD (--psm 0) to detect the script family, then
+    do a single-language OCR pass for accurate character-level detection.
+
+    BUG A FIX: The old approach ran tesseract with ALL 5 languages at once
+    on image-only PDFs.  Multi-language mode is slow and confuses tesseract
+    (CJK glyphs match against Latin models → garbage).  The two-pass
+    approach is both faster and more accurate:
+      Pass 1: OSD script detection (instant, no OCR)
+      Pass 2: Single-language OCR with the detected script for char analysis
+    """
+    # ── Pass 1: script detection via OSD ──
+    script = None
+    try:
+        r = run(["tesseract", tmp_path, "stdout", "--psm", "0"], timeout=15)
+        if r.returncode == 0 and r.stdout:
+            for line in r.stdout.splitlines():
+                if "Script:" in line:
+                    script = line.split("Script:")[-1].strip()
+                    break
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # Map tesseract script names → best single detection language
+    script_to_lang = {
+        "Latin": "eng",
+        "Han": "chi_tra",          # could be ZH or JP kanji; pass 2 resolves
+        "Hangul": "kor",
+        "Japanese": "jpn",
+        "Katakana": "jpn",
+        "Hiragana": "jpn",
+        "HanS": "chi_sim",
+        "HanT": "chi_tra",
+    }
+
+    if script and script in script_to_lang:
+        detect_lang = script_to_lang[script]
+    else:
+        # Unknown script or OSD failed — use eng for a fast baseline pass
+        detect_lang = "eng"
+
+    detect_lang, _ = _filter_ocr_languages(detect_lang)
+
+    # ── Pass 2: single-language OCR for character-level analysis ──
+    try:
+        r = run(["tesseract", tmp_path, "stdout",
+                  "-l", detect_lang, "--psm", "3"], timeout=30)
+        if r.returncode == 0 and r.stdout:
+            result = detect_language_from_text(r.stdout)
+            if result != ALL_OCR_LANGS:
+                return result
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # If the OSD said Han/CJK but pass-2 was inconclusive, try the other
+    # Chinese variant before giving up.
+    if script and script.startswith("Han"):
+        alt_lang = "chi_sim" if detect_lang == "chi_tra" else "chi_tra"
+        alt_lang, _ = _filter_ocr_languages(alt_lang)
+        try:
+            r = run(["tesseract", tmp_path, "stdout",
+                      "-l", alt_lang, "--psm", "3"], timeout=30)
+            if r.returncode == 0 and r.stdout:
+                result = detect_language_from_text(r.stdout)
+                if result != ALL_OCR_LANGS:
+                    return result
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+    return ALL_OCR_LANGS
+
+
 def detect_language_from_pdf(pdf_path: Path) -> str:
+    # ── Try 1: extract existing text (works for partial-OCR PDFs) ──
     check = PDFCheckResult()
     _extract_text_pymupdf(pdf_path, check)
     if check.sample_text and not check.sample_text.startswith("("):
@@ -448,6 +521,7 @@ def detect_language_from_pdf(pdf_path: Path) -> str:
         if detected != ALL_OCR_LANGS:
             return detected
 
+    # ── Try 2: render page to image and detect script ──
     try:
         import fitz
         import tempfile
@@ -455,28 +529,36 @@ def detect_language_from_pdf(pdf_path: Path) -> str:
         if len(doc) == 0:
             doc.close()
             return ALL_OCR_LANGS
-        page = doc[0]
-        mat = fitz.Matrix(150 / 72, 150 / 72)
-        pix = page.get_pixmap(matrix=mat)
-        img_bytes = pix.tobytes("png")
-        doc.close()
 
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            tmp.write(img_bytes)
-            tmp_path = tmp.name
-        try:
-            detect_langs = _filter_ocr_languages(ALL_OCR_LANGS)
-            r = run(["tesseract", tmp_path, "stdout",
-                      "-l", detect_langs, "--psm", "3"], timeout=30)
-            if r.returncode == 0 and r.stdout:
-                return detect_language_from_text(r.stdout)
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-        finally:
+        # Sample up to 3 pages for better detection accuracy
+        sample_pages = [0]
+        if len(doc) > 10:
+            sample_pages.append(len(doc) // 2)
+        if len(doc) > 2:
+            sample_pages.append(min(2, len(doc) - 1))
+
+        for page_idx in sample_pages:
+            page = doc[page_idx]
+            # Use 200 DPI for detection — better for CJK strokes
+            mat = fitz.Matrix(200 / 72, 200 / 72)
+            pix = page.get_pixmap(matrix=mat)
+            img_bytes = pix.tobytes("png")
+
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp.write(img_bytes)
+                tmp_path = tmp.name
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+                detected = _detect_script_from_image(tmp_path)
+                if detected != ALL_OCR_LANGS:
+                    doc.close()
+                    return detected
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+        doc.close()
     except ImportError:
         pass
     except Exception:
@@ -500,17 +582,35 @@ def _check_tesseract_languages():
     return set()
 
 
-def _filter_ocr_languages(requested: str) -> str:
+def _filter_ocr_languages(requested: str) -> tuple[str, list[str]]:
+    """Filter requested OCR languages to only those installed in tesseract.
+
+    Returns (filtered_language_string, list_of_warning_messages).
+
+    BUG C FIX: Returns warnings so callers can surface them to the user,
+    rather than silently falling back to English.
+    """
+    warnings = []
     available = _check_tesseract_languages()
     if not available:
-        return requested
+        return requested, warnings
     parts = requested.split("+")
     valid = [p for p in parts if p in available]
+    dropped = [p for p in parts if p not in available]
+    if dropped:
+        dropped_labels = [LANG_LABELS.get(d, d) for d in dropped]
+        msg = (f"Tesseract language pack(s) not installed: "
+               f"{', '.join(dropped_labels)}. OCR quality may be degraded.")
+        warnings.append(msg)
+        print(f"  WARNING: {msg}")
     if not valid:
         if "eng" in available:
-            return "eng"
-        return requested
-    return "+".join(valid)
+            msg = "Falling back to English-only OCR. Install missing packs for better results."
+            warnings.append(msg)
+            print(f"  WARNING: {msg}")
+            return "eng", warnings
+        return requested, warnings
+    return "+".join(valid), warnings
 
 
 def _compress_page_ranges(pages: list[int]) -> str:
@@ -547,16 +647,30 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
         print("  Auto-detecting language...")
         language = detect_language_from_pdf(input_pdf)
 
-    language = _filter_ocr_languages(language)
+    language, lang_warnings = _filter_ocr_languages(language)
     lang_label = LANG_LABELS.get(language, language)
     print(f"  OCR language: {lang_label} ({language})")
+
+    # ── BUG B FIX: Boost DPI for CJK languages ──
+    # CJK characters have dense strokes that need higher resolution.
+    # 150 DPI is fine for Latin scripts but marginal for complex CJK
+    # (鬱繊鑑 etc.) and will fail on small text / ruby annotations.
+    # Note: image_dpi is only a FALLBACK when the embedded image has
+    # no native resolution metadata, but it also affects the rendering
+    # resolution for tesseract's internal page-to-image conversion.
+    _CJK_LANG_PREFIXES = ("chi_", "jpn", "kor")
+    is_cjk = any(language.startswith(p) or f"+{p}" in language
+                  for p in _CJK_LANG_PREFIXES)
+    effective_dpi = max(dpi, 250) if is_cjk else dpi
+    if effective_dpi != dpi:
+        print(f"  DPI boosted: {dpi} → {effective_dpi} (CJK strokes need higher resolution)")
 
     ocr_kwargs = {
         "language": language,
         "output_type": "pdf",
         "skip_text": True,
         "optimize": 0,
-        "image_dpi": dpi,
+        "image_dpi": effective_dpi,
         "progress_bar": False,
         "jobs": min(os.cpu_count() or 1, 4),
     }
@@ -585,6 +699,7 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
             "language": language,
             "lang_label": lang_label,
             "pages_ocrd": 0,
+            "warnings": lang_warnings,
         }
     except ocrmypdf.exceptions.MissingDependencyError as e:
         raise RuntimeError(
@@ -622,6 +737,7 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
         "pages_total": post_check.total_pages,
         "pages_with_text": post_check.pages_with_text,
         "pages_still_image": len(post_check.pages_image_only),
+        "warnings": lang_warnings,
     }
 
 
@@ -663,8 +779,10 @@ def _restore_pdf_metadata(pdf_path: Path, original_toc, original_annotations):
 
     if original_toc:
         current_toc = doc.get_toc()
-        if len(current_toc) < len(original_toc):
-            print(f"  Restoring {len(original_toc)} bookmarks/TOC entries...")
+        # Use != instead of < so we also restore if ocrmypdf mangled entries
+        if len(current_toc) != len(original_toc):
+            print(f"  Restoring {len(original_toc)} bookmarks/TOC entries "
+                  f"(ocrmypdf left {len(current_toc)})...")
             try:
                 doc.set_toc(original_toc)
                 modified = True
@@ -679,7 +797,8 @@ def _restore_pdf_metadata(pdf_path: Path, original_toc, original_annotations):
             page = doc[page_idx]
             current_links = page.get_links()
 
-            if len(current_links) < len(orig_links):
+            # Restore if any links were lost (use != for safety)
+            if len(current_links) != len(orig_links):
                 for cl in current_links:
                     try:
                         page.delete_link(cl)
@@ -701,7 +820,8 @@ def _restore_pdf_metadata(pdf_path: Path, original_toc, original_annotations):
         try:
             doc.saveIncr()
         except Exception:
-            doc.save(str(pdf_path), garbage=0, deflate=False)
+            # BUG D FIX: use deflate=True to avoid producing bloated output
+            doc.save(str(pdf_path), garbage=1, deflate=True)
     doc.close()
 
 
@@ -1099,6 +1219,10 @@ def run_ocr_step(output_file, pages_image_only):
             dpi=150,
             pages_to_ocr=pages_image_only or None,
         )
+
+        # Surface any language-pack warnings as visible step messages
+        for warn_msg in ocr_result.get("warnings", []):
+            yield (7, f"Warning: {warn_msg}")
 
         if ocr_result["status"] == "already_has_text":
             if ocr_output.exists():
