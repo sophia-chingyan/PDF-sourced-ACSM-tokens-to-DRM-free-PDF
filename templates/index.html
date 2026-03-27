@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ACSM Converter — EPUB &amp; PDF</title>
+    <title>ACSM Converter — PDF</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <style>
         :root {
@@ -118,7 +118,6 @@
             letter-spacing: 0.03em;
             white-space: nowrap;
         }
-        .file-badge-epub  { background: #e8f5e9; color: #2e7d32; }
         .file-badge-pdf   { background: #fce4ec; color: #c62828; }
         .file-badge-ocr   { background: #e3f2fd; color: #1565c0; }
         .file-size { color: #78909c; font-size: 0.85rem; }
@@ -302,7 +301,7 @@
             <div class="hero-inner">
                 <div class="hero-title">
                     <h1>ACSM Converter</h1>
-                    <p>Convert ACSM tokens to DRM-free EPUB or PDF — with automatic OCR (EN / 繁中 / 简中 / 日本語 / 한국어)</p>
+                    <p>Convert PDF-sourced ACSM tokens to DRM-free PDF — with automatic OCR (EN / 繁中 / 简中 / 日本語 / 한국어)</p>
                 </div>
                 <nav class="hero-nav">
                     <a href="/library">📚 My Library</a>
@@ -316,7 +315,7 @@
         <section id="upload-section">
             <div class="upload-box">
                 <div class="icon">&#128214;</div>
-                <p>Select an <strong>.acsm</strong> file to convert (EPUB or PDF source)</p>
+                <p>Select a PDF-sourced <strong>.acsm</strong> file to convert</p>
                 <input type="file" id="file-input" accept=".acsm" hidden>
                 <button class="btn-browse" onclick="document.getElementById('file-input').click()">Browse File…</button>
             </div>
@@ -326,7 +325,7 @@
         <section id="confirm-section">
             <h3>Ready to Convert</h3>
             <p>File: <span class="confirm-filename" id="confirm-filename"></span></p>
-            <p>This will download the ebook, remove DRM, and verify readability.</p>
+            <p>This will download the PDF, remove DRM, and verify readability. Images, paragraph structure, and links are fully preserved.</p>
             <div class="confirm-buttons">
                 <button id="confirm-cancel" class="secondary outline">Cancel</button>
                 <button id="confirm-start">Start Conversion</button>
@@ -397,9 +396,9 @@
                             {% for f in book.files %}
                             <div class="book-file">
                                 {% if f.ocr %}
-                                <span class="file-badge file-badge-ocr">{{ f.ext }}+OCR</span>
+                                <span class="file-badge file-badge-ocr">PDF+OCR</span>
                                 {% else %}
-                                <span class="file-badge {% if f.ext == 'PDF' %}file-badge-pdf{% else %}file-badge-epub{% endif %}">{{ f.ext }}</span>
+                                <span class="file-badge file-badge-pdf">PDF</span>
                                 {% endif %}
                                 <span class="file-size">{{ f.size }}</span>
                                 <a href="/download/{{ f.name }}" class="btn-dl">Download</a>
@@ -683,8 +682,6 @@
             const secondaryFilename = parts[2] || '';
             const secondarySize     = parts[3] || '';
 
-            const isPDF = primaryFilename.toLowerCase().endsWith('.pdf');
-
             setTimeout(() => {
                 progressSection.style.display = 'none';
 
@@ -701,7 +698,7 @@
                 const btnPrimary = document.createElement('a');
                 btnPrimary.className = 'btn-dl-primary';
                 btnPrimary.href = '/download/' + encodeURIComponent(primaryFilename);
-                btnPrimary.textContent = '⬇ Download ' + (isPDF ? (secondaryFilename ? 'Searchable PDF' : 'PDF') : 'EPUB');
+                btnPrimary.textContent = '⬇ Download ' + (secondaryFilename ? 'Searchable PDF' : 'PDF');
                 doneActions.appendChild(btnPrimary);
 
                 if (secondaryFilename) {

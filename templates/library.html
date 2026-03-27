@@ -224,7 +224,6 @@
             white-space: nowrap;
             flex-shrink: 0;
         }
-        .badge-epub { background: #e8f5e9; color: #2e7d32; }
         .badge-pdf  { background: #fce4ec; color: #c62828; }
         .badge-ocr  { background: #e3f2fd; color: #1565c0; }
         .file-size  { color: var(--muted); margin-left: auto; flex-shrink: 0; }
@@ -476,7 +475,7 @@
         <div class="hero-inner">
             <div class="hero-title">
                 <h1>📚 My Library</h1>
-                <p>Manage your converted ebooks — download or delete files</p>
+                <p>Manage your converted PDFs — download or delete files</p>
             </div>
             <nav class="hero-nav">
                 <a href="/">← Back to Converter</a>
@@ -487,18 +486,18 @@
 
 <main class="container">
 
-    <!-- Stats -->
+    {# ── BUG 2 FIX: Stats now use server-computed values ── #}
     <div class="stats-strip" id="stats-strip">
         <div class="stat-pill">
             <span class="stat-num" id="stat-books">{{ books|length }}</span>
             <span class="stat-label">Books</span>
         </div>
         <div class="stat-pill">
-            <span class="stat-num" id="stat-files">{{ books|sum(attribute='files')|list|length if books else 0 }}</span>
+            <span class="stat-num" id="stat-files">{{ total_files }}</span>
             <span class="stat-label">Files</span>
         </div>
         <div class="stat-pill">
-            <span class="stat-num" id="stat-ocr">{{ books|selectattr('files')|list|length }}</span>
+            <span class="stat-num" id="stat-ocr">{{ ocr_count }}</span>
             <span class="stat-label">With OCR</span>
         </div>
     </div>
@@ -577,11 +576,9 @@
                         {% for f in book.files %}
                         <div class="card-file-row">
                             {% if f.ocr %}
-                            <span class="badge badge-ocr">{{ f.ext }}+OCR</span>
-                            {% elif f.ext == 'PDF' %}
-                            <span class="badge badge-pdf">PDF</span>
+                            <span class="badge badge-ocr">PDF+OCR</span>
                             {% else %}
-                            <span class="badge badge-epub">EPUB</span>
+                            <span class="badge badge-pdf">PDF</span>
                             {% endif %}
                             <span class="file-size">{{ f.size }}</span>
                         </div>
@@ -595,7 +592,7 @@
                     href="/download/{{ f.name }}"
                     class="btn-dl-sm {% if f.ocr %}btn-dl-ocr{% endif %}"
                     download
-                >⬇ {% if f.ocr %}Searchable{% elif f.ext == 'EPUB' %}EPUB{% else %}PDF{% endif %}</a>
+                >⬇ {% if f.ocr %}Searchable{% else %}PDF{% endif %}</a>
                 {% endfor %}
                 <button
                     class="btn-delete-sm"
@@ -634,11 +631,9 @@
             <div class="list-badges">
                 {% for f in book.files %}
                 {% if f.ocr %}
-                <span class="badge badge-ocr">{{ f.ext }}+OCR</span>
-                {% elif f.ext == 'PDF' %}
-                <span class="badge badge-pdf">PDF</span>
+                <span class="badge badge-ocr">PDF+OCR</span>
                 {% else %}
-                <span class="badge badge-epub">EPUB</span>
+                <span class="badge badge-pdf">PDF</span>
                 {% endif %}
                 {% endfor %}
             </div>
@@ -649,7 +644,7 @@
                     class="btn-dl-sm {% if f.ocr %}btn-dl-ocr{% endif %}"
                     download
                     title="{{ f.size }}"
-                >⬇ {% if f.ocr %}Searchable{% elif f.ext == 'EPUB' %}EPUB{% else %}PDF{% endif %}</a>
+                >⬇ {% if f.ocr %}Searchable{% else %}PDF{% endif %}</a>
                 {% endfor %}
             </div>
             <button
@@ -684,7 +679,7 @@
     let currentView   = localStorage.getItem('lib-view') || 'grid';
     let currentSort   = 'date';
     let selectedStems = new Set();
-    let deleteTarget  = null;  // stem string OR array of stems
+    let deleteTarget  = null;
 
     /* ── Init ── */
     setView(currentView, true);
@@ -714,7 +709,6 @@
             } else if (s === 'date') {
                 return parseInt(b.dataset.idx) - parseInt(a.dataset.idx);
             } else if (s === 'size') {
-                // crude: sort by first size found in the card text
                 const sizeA = parseFloat(a.querySelector('.file-size')?.textContent) || 0;
                 const sizeB = parseFloat(b.querySelector('.file-size')?.textContent) || 0;
                 return sizeB - sizeA;
@@ -757,12 +751,10 @@
         } else {
             selectedStems.delete(stem);
         }
-        // Sync both grid and list checkboxes for the same stem
         document.querySelectorAll(`[data-stem="${CSS.escape(stem)}"] input[type=checkbox],
                                    input[data-stem="${CSS.escape(stem)}"]`).forEach(cb => {
             cb.checked = checkbox.checked;
         });
-        // Highlight cards
         document.querySelectorAll(`.book-card[data-stem="${CSS.escape(stem)}"],
                                    .list-row[data-stem="${CSS.escape(stem)}"]`).forEach(c => {
             c.classList.toggle('selected', checkbox.checked);
@@ -814,7 +806,6 @@
             showToast(`⚠ ${failed.length} deletion(s) failed.`, 'error');
         }
 
-        // Remove cards from DOM for succeeded ones
         results.forEach(r => {
             if (!r.ok) return;
             const stem = r.stem;
@@ -839,7 +830,6 @@
                     : '🗑 Delete selected';
             }
 
-            // Show empty state if no books remain
             if (document.querySelectorAll('#view-grid .book-card').length === 0) {
                 showEmptyState();
             }
@@ -862,7 +852,7 @@
     function updateStats() {
         const books = document.querySelectorAll('#view-grid .book-card').length;
         const files = document.querySelectorAll('#view-grid .btn-dl-sm').length;
-        const withOcr = [...document.querySelectorAll('#view-grid .badge-ocr')].length;
+        const withOcr = document.querySelectorAll('#view-grid .badge-ocr').length;
         const s = document.getElementById('stat-books');
         const f = document.getElementById('stat-files');
         const o = document.getElementById('stat-ocr');
