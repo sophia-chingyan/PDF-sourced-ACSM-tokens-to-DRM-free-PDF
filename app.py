@@ -44,14 +44,6 @@ STEP_LABELS = {
 active_jobs = {}
 _active_jobs_lock = threading.Lock()
 
-# ── BUG 1 FIX ────────────────────────────────────────────────────────────
-# Track which files in a paired set (stem.pdf + stem_ocr.pdf) have been
-# downloaded.  Only delete the pair once BOTH have been fetched, or after
-# a timeout (cleanup thread handles the timeout case).
-_downloaded_tracker = {}        # base_stem -> set of downloaded filenames
-_downloaded_tracker_lock = threading.Lock()
-# ─────────────────────────────────────────────────────────────────────────
-
 
 def login_required(f):
     @wraps(f)
@@ -82,24 +74,6 @@ def logout():
     return redirect(url_for("login"))
 
 
-def extract_epub_cover(epub_path):
-    cover_out = COVER_DIR / f"{epub_path.stem}.jpg"
-    if cover_out.exists():
-        return cover_out.name
-    try:
-        with zipfile.ZipFile(epub_path, "r") as zf:
-            cover_name = _find_cover_in_opf(zf) or _find_cover_by_name(zf)
-            if cover_name:
-                data = zf.read(cover_name)
-                ext = Path(cover_name).suffix or ".jpg"
-                cover_out = COVER_DIR / f"{epub_path.stem}{ext}"
-                cover_out.write_bytes(data)
-                return cover_out.name
-    except Exception:
-        pass
-    return None
-
-
 def extract_pdf_cover(pdf_path):
     cover_out = COVER_DIR / f"{pdf_path.stem}.jpg"
     if cover_out.exists():
@@ -122,83 +96,49 @@ def extract_pdf_cover(pdf_path):
     return None
 
 
-def _find_cover_in_opf(zf):
-    opf_path = next((n for n in zf.namelist() if n.endswith(".opf")), None)
-    if not opf_path:
-        return None
-    opf_xml = zf.read(opf_path).decode("utf-8", errors="replace")
-    root = ET.fromstring(opf_xml)
-    cover_id = None
-    for meta in root.iter():
-        if meta.tag.endswith("}meta") or meta.tag == "meta":
-            if meta.get("name") == "cover":
-                cover_id = meta.get("content")
-                break
-    if not cover_id:
-        for item in root.iter():
-            if item.tag.endswith("}item") or item.tag == "item":
-                if "cover-image" in (item.get("properties") or ""):
-                    href = item.get("href")
-                    if href:
-                        opf_dir = str(Path(opf_path).parent)
-                        return href if opf_dir == "." else f"{opf_dir}/{href}"
-        return None
-    for item in root.iter():
-        if item.tag.endswith("}item") or item.tag == "item":
-            if item.get("id") == cover_id:
-                href = item.get("href")
-                if href:
-                    opf_dir = str(Path(opf_path).parent)
-                    return href if opf_dir == "." else f"{opf_dir}/{href}"
-    return None
-
-
-def _find_cover_by_name(zf):
-    for name in zf.namelist():
-        lower = name.lower()
-        if "cover" in lower and any(lower.endswith(ext) for ext in (".jpg", ".jpeg", ".png")):
-            return name
-    return None
-
-
 def get_books():
     if not OUTPUT_DIR.exists():
         return []
     books = OrderedDict()
+    total_files = 0
+    ocr_count = 0
     for f in sorted(OUTPUT_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-        if f.suffix in (".epub", ".pdf"):
-            stem = f.stem
-            # Group OCR variants (stem_ocr) with their original (stem)
-            base_stem = stem[:-4] if stem.endswith("_ocr") else stem
-            if not base_stem:
-                continue  # guard against a file literally named "_ocr.pdf"
-            if base_stem not in books:
-                books[base_stem] = {"stem": base_stem, "files": [], "cover": None}
-            size_mb = f.stat().st_size / (1024 * 1024)
-            ext_label = f.suffix[1:].upper()
-            is_ocr = stem.endswith("_ocr")
-            books[base_stem]["files"].append({
-                "name": f.name,
-                "size": f"{size_mb:.1f} MB",
-                "ext": ext_label,
-                "ocr": is_ocr,
-            })
-            if not books[base_stem]["cover"]:
-                if f.suffix == ".epub":
-                    cover = extract_epub_cover(f)
-                else:
-                    cover = extract_pdf_cover(f)
-                if cover:
-                    books[base_stem]["cover"] = cover
+        if f.suffix != ".pdf":
+            continue
+        stem = f.stem
+        # Group OCR variants (stem_ocr) with their original (stem)
+        base_stem = stem[:-4] if stem.endswith("_ocr") else stem
+        if not base_stem:
+            continue
+        if base_stem not in books:
+            books[base_stem] = {"stem": base_stem, "files": [], "cover": None, "has_ocr": False}
+        size_mb = f.stat().st_size / (1024 * 1024)
+        is_ocr = stem.endswith("_ocr")
+        books[base_stem]["files"].append({
+            "name": f.name,
+            "size": f"{size_mb:.1f} MB",
+            "ext": "PDF",
+            "ocr": is_ocr,
+        })
+        total_files += 1
+        if is_ocr:
+            books[base_stem]["has_ocr"] = True
+            ocr_count += 1
+        if not books[base_stem]["cover"]:
+            cover = extract_pdf_cover(f)
+            if cover:
+                books[base_stem]["cover"] = cover
     # Sort each book's files: OCR version first, then original
     for book in books.values():
         book["files"].sort(key=lambda x: (not x["ocr"], x["name"]))
-    return list(books.values())
+    result = list(books.values())
+    # Attach summary stats for the template
+    return result, total_files, ocr_count
 
 
 def _prune_old_jobs():
     """Remove completed/errored jobs older than 2 hours to prevent memory growth."""
-    cutoff = time.time() - 7200  # 2 hours
+    cutoff = time.time() - 7200
     with _active_jobs_lock:
         stale = [
             jid for jid, job in active_jobs.items()
@@ -268,7 +208,6 @@ def run_ocr_job(job_id):
         job = active_jobs[job_id]
 
     pdf_path = job["ocr_pdf_path"]
-    # Guard against empty strings from a malformed ocr_pages value
     pages = [int(p) for p in job["ocr_pages"].split(",") if p.strip()]
 
     print(f"[DEBUG] Job {job_id} OCR started: pdf={pdf_path}, pages={len(pages)}", flush=True)
@@ -302,21 +241,24 @@ def run_ocr_job(job_id):
 @app.route("/")
 @login_required
 def index():
-    books = get_books()
+    books, total_files, ocr_count = get_books()
     resp = make_response(render_template("index.html", books=books))
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
 
 
-# ── NEW: Library management page ──────────────────────────────────────────
 @app.route("/library")
 @login_required
 def library():
-    books = get_books()
-    resp = make_response(render_template("library.html", books=books))
+    books, total_files, ocr_count = get_books()
+    resp = make_response(render_template(
+        "library.html",
+        books=books,
+        total_files=total_files,
+        ocr_count=ocr_count,
+    ))
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
-# ─────────────────────────────────────────────────────────────────────────
 
 
 @app.route("/upload", methods=["POST"])
@@ -421,7 +363,6 @@ def ocr_decision(job_id):
         return jsonify({"status": "ocr_started"})
 
     else:
-        # Skip OCR — original PDF is already saved on disk, just mark done
         pdf_path = Path(job.get("ocr_pdf_path", ""))
         size_mb = pdf_path.stat().st_size / (1024 * 1024) if pdf_path.exists() else 0
         done_msg = f"{pdf_path.name}|{size_mb:.1f} MB"
@@ -437,43 +378,9 @@ def ocr_decision(job_id):
         return jsonify({"status": "skipped", "done_message": done_msg})
 
 
-# ── BUG 1 + BUG 4 FIX ────────────────────────────────────────────────────
-def _find_sibling_files(base_stem):
-    """Return set of filenames on disk for a given base stem."""
-    siblings = set()
-    paired_stems = {base_stem, f"{base_stem}_ocr"}
-    for f in OUTPUT_DIR.iterdir():
-        if f.stem in paired_stems and f.suffix in (".pdf", ".epub"):
-            siblings.add(f.name)
-    return siblings
-
-
-def _delayed_cleanup(base_stem, delay_seconds=60):
-    """Delete all files for base_stem after a delay."""
-    def _do_cleanup():
-        time.sleep(delay_seconds)
-        paired_stems = {base_stem, f"{base_stem}_ocr"}
-        for f in list(OUTPUT_DIR.iterdir()):
-            if f.stem in paired_stems and f.suffix in (".pdf", ".epub"):
-                try:
-                    f.unlink(missing_ok=True)
-                except Exception:
-                    pass
-        for d in (UPLOAD_DIR, COVER_DIR):
-            for f in d.iterdir():
-                f_base = f.stem[:-4] if f.stem.endswith("_ocr") else f.stem
-                if f_base == base_stem:
-                    try:
-                        f.unlink(missing_ok=True)
-                    except Exception:
-                        pass
-        with _downloaded_tracker_lock:
-            _downloaded_tracker.pop(base_stem, None)
-
-    t = threading.Thread(target=_do_cleanup, daemon=True)
-    t.start()
-
-
+# ── BUG 1 FIX: Download no longer auto-deletes files ─────────────────────
+# Files persist in the library until explicitly deleted via /delete/<stem>.
+# The old _delayed_cleanup and _downloaded_tracker have been removed entirely.
 @app.route("/download/<filename>")
 @login_required
 def download(filename):
@@ -481,23 +388,6 @@ def download(filename):
     file_path = OUTPUT_DIR / filename
     if not file_path.exists():
         return {"error": "File not found"}, 404
-
-    stem = Path(filename).stem
-    base_stem = stem[:-4] if stem.endswith("_ocr") else stem
-    if not base_stem:
-        return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
-
-    with _downloaded_tracker_lock:
-        if base_stem not in _downloaded_tracker:
-            _downloaded_tracker[base_stem] = set()
-        _downloaded_tracker[base_stem].add(filename)
-        downloaded = _downloaded_tracker[base_stem].copy()
-
-    all_siblings = _find_sibling_files(base_stem)
-
-    if all_siblings and all_siblings.issubset(downloaded):
-        _delayed_cleanup(base_stem, delay_seconds=60)
-
     return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
 
 
@@ -511,9 +401,10 @@ def delete_book(stem):
     paired_stems = {stem, f"{stem}_ocr"}
     deleted = []
     for f in list(OUTPUT_DIR.iterdir()):
-        if f.stem in paired_stems and f.suffix in (".pdf", ".epub"):
+        if f.stem in paired_stems and f.suffix == ".pdf":
             f.unlink(missing_ok=True)
             deleted.append(f.name)
+    # Clean up uploads and covers too
     for d in (UPLOAD_DIR, COVER_DIR):
         for f in d.iterdir():
             f_base = f.stem[:-4] if f.stem.endswith("_ocr") else f.stem
