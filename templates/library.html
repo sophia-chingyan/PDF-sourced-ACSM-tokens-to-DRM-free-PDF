@@ -486,7 +486,6 @@
 
 <main class="container">
 
-    {# ── BUG 2 FIX: Stats now use server-computed values ── #}
     <div class="stats-strip" id="stats-strip">
         <div class="stat-pill">
             <span class="stat-num" id="stat-books">{{ books|length }}</span>
@@ -681,7 +680,10 @@
     let selectedStems = new Set();
     let deleteTarget  = null;
 
-    /* ── Init ── */
+    /* ── Init ──
+       BUG FIX: When the library is empty, #view-grid / #view-list / #btn-grid /
+       #btn-list do not exist in the DOM (the {% else %} block is skipped).
+       All functions now guard against null elements before accessing .style. */
     setView(currentView, true);
     updateVisibleCount();
 
@@ -689,10 +691,14 @@
     function setView(v, skipSave) {
         currentView = v;
         if (!skipSave) localStorage.setItem('lib-view', v);
-        document.getElementById('view-grid').style.display = v === 'grid' ? 'grid' : 'none';
-        document.getElementById('view-list').style.display = v === 'list' ? 'flex'  : 'none';
-        document.getElementById('btn-grid').classList.toggle('active', v === 'grid');
-        document.getElementById('btn-list').classList.toggle('active', v === 'list');
+        var grid = document.getElementById('view-grid');
+        var list = document.getElementById('view-list');
+        var btnG = document.getElementById('btn-grid');
+        var btnL = document.getElementById('btn-list');
+        if (grid) grid.style.display = v === 'grid' ? 'grid' : 'none';
+        if (list) list.style.display = v === 'list' ? 'flex'  : 'none';
+        if (btnG) btnG.classList.toggle('active', v === 'grid');
+        if (btnL) btnL.classList.toggle('active', v === 'list');
     }
 
     /* ── Sort ── */
@@ -717,14 +723,16 @@
         }
 
         const grid = document.getElementById('view-grid');
-        gridItems.sort(sortFn).forEach(el => grid.appendChild(el));
         const list = document.getElementById('view-list');
-        listItems.sort(sortFn).forEach(el => list.appendChild(el));
+        if (grid) gridItems.sort(sortFn).forEach(el => grid.appendChild(el));
+        if (list) listItems.sort(sortFn).forEach(el => list.appendChild(el));
     }
 
     /* ── Search / filter ── */
     function applyFilters() {
-        const q = document.getElementById('search-input').value.trim().toLowerCase();
+        const searchEl = document.getElementById('search-input');
+        if (!searchEl) return;
+        const q = searchEl.value.trim().toLowerCase();
         ['#view-grid .book-card', '#view-list .list-row'].forEach(sel => {
             document.querySelectorAll(sel).forEach(el => {
                 const match = !q || el.dataset.title.includes(q);
@@ -761,6 +769,7 @@
         });
 
         const btn = document.getElementById('btn-delete-selected');
+        if (!btn) return;
         btn.disabled = selectedStems.size === 0;
         btn.textContent = selectedStems.size > 0
             ? `🗑 Delete selected (${selectedStems.size})`
