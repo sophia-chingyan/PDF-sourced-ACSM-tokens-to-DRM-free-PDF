@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Flask web interface for the ACSM to EPUB/PDF converter."""
+"""Flask web interface for the ACSM-to-PDF converter."""
 
-import json
 import os
 import threading
 import time
-import zipfile
-import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from functools import wraps
 from pathlib import Path
@@ -98,7 +95,7 @@ def extract_pdf_cover(pdf_path):
 
 def get_books():
     if not OUTPUT_DIR.exists():
-        return []
+        return [], 0, 0
     books = OrderedDict()
     total_files = 0
     ocr_count = 0
@@ -132,7 +129,6 @@ def get_books():
     for book in books.values():
         book["files"].sort(key=lambda x: (not x["ocr"], x["name"]))
     result = list(books.values())
-    # Attach summary stats for the template
     return result, total_files, ocr_count
 
 
@@ -378,9 +374,6 @@ def ocr_decision(job_id):
         return jsonify({"status": "skipped", "done_message": done_msg})
 
 
-# ── BUG 1 FIX: Download no longer auto-deletes files ─────────────────────
-# Files persist in the library until explicitly deleted via /delete/<stem>.
-# The old _delayed_cleanup and _downloaded_tracker have been removed entirely.
 @app.route("/download/<filename>")
 @login_required
 def download(filename):
