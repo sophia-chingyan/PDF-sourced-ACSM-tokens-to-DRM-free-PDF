@@ -12,13 +12,15 @@ all images, paragraph structure, fonts, links, bookmarks, and
 annotations are preserved exactly as in the original.
 
 Supported OCR languages:
-    English, Traditional Chinese, Simplified Chinese,
-    Japanese (Hiragana, Katakana, Kanji), Korean (Hangul)
+    English, Traditional Chinese (horizontal + vertical),
+    Simplified Chinese (horizontal + vertical),
+    Japanese (Hiragana, Katakana, Kanji — horizontal + vertical),
+    Korean (Hangul)
 
 Prerequisites:
     libgourou (built from source)
     pip install ocrmypdf PyMuPDF pypdf
-    tesseract + language packs
+    tesseract + language packs (including *_vert packs for CJK vertical writing)
 """
 
 import argparse
@@ -276,38 +278,58 @@ def verify_pdf_readability(pdf_path: Path) -> PDFCheckResult:
 
 # --- OCR Engine -----------------------------------------------------------
 
-# FIX 1: Always use all 5 language packs.
+# BUGFIX 1: Include vertical-writing Tesseract packs for CJK languages.
 #
-# The previous approach tried to auto-detect the language by running
-# Tesseract OSD + a full OCR detection pass on up to 3 sample pages.
-# For a 300-page image-only book this wasted 2–3 minutes of pure overhead
-# before the real OCR even began — the single biggest cause of timeouts.
+# The Dockerfile installs chi_tra_vert, chi_sim_vert, and jpn_vert but the
+# original ALL_OCR_LANGS string never referenced them, so any vertically-set
+# Traditional Chinese, Simplified Chinese, or Japanese text was silently
+# misrecognised or dropped entirely.
 #
-# Since all 5 packs (eng, chi_tra, chi_sim, jpn, kor) are installed in the
-# Docker image, we always supply them together.  Tesseract's internal voting
-# system picks the right script for each text block automatically, so output
-# quality is equal-or-better with no detection penalty.
+# Tesseract treats horizontal and vertical writing as separate recognisers:
+#   chi_tra      — Traditional Chinese horizontal
+#   chi_tra_vert — Traditional Chinese vertical (top-to-bottom columns)
+#   chi_sim      — Simplified Chinese horizontal
+#   chi_sim_vert — Simplified Chinese vertical
+#   jpn          — Japanese horizontal (also handles mixed H+V well)
+#   jpn_vert     — Japanese vertical (classic manga / novel column layout)
+#   kor          — Korean (no separate vertical pack in Tesseract)
+#   eng          — English
 #
-# The only remaining use of detect_language_from_text / detect_language_from_pdf
-# is for the CLI --ocr-lang=auto flag, where speed is less critical.
+# Including all packs lets Tesseract's internal voting pick the right
+# recogniser per text block with no manual detection step.
 
-ALL_OCR_LANGS = "eng+chi_tra+chi_sim+jpn+kor"
+ALL_OCR_LANGS = "eng+chi_tra+chi_tra_vert+chi_sim+chi_sim_vert+jpn+jpn_vert+kor"
 
+# BUGFIX 2: LANG_LABELS key for ALL_OCR_LANGS must exactly match the
+# constant above, otherwise LANG_LABELS.get(ALL_OCR_LANGS, ALL_OCR_LANGS)
+# always falls through to the raw string.
 LANG_LABELS = {
     "eng": "English",
-    "chi_tra": "Traditional Chinese",
-    "chi_sim": "Simplified Chinese",
-    "jpn": "Japanese",
+    "chi_tra": "Traditional Chinese (horizontal)",
+    "chi_tra_vert": "Traditional Chinese (vertical)",
+    "chi_sim": "Simplified Chinese (horizontal)",
+    "chi_sim_vert": "Simplified Chinese (vertical)",
+    "jpn": "Japanese (horizontal)",
+    "jpn_vert": "Japanese (vertical)",
     "kor": "Korean",
+    # BUGFIX 3: add vert-variant combo keys so warning messages never show
+    # raw Tesseract language codes to the user.
+    "chi_tra+chi_tra_vert": "Traditional Chinese (H+V)",
+    "chi_sim+chi_sim_vert": "Simplified Chinese (H+V)",
+    "jpn+jpn_vert": "Japanese (H+V)",
     "chi_tra+chi_sim": "Chinese (mixed)",
+    "chi_tra+chi_tra_vert+chi_sim+chi_sim_vert": "Chinese (mixed, H+V)",
     "chi_tra+chi_sim+eng": "Chinese + English",
-    "eng+chi_tra": "English + Trad. Chinese",
-    "eng+chi_sim": "English + Simp. Chinese",
-    "jpn+eng": "Japanese + English",
+    "eng+chi_tra+chi_tra_vert": "English + Trad. Chinese (H+V)",
+    "eng+chi_sim+chi_sim_vert": "English + Simp. Chinese (H+V)",
+    "jpn+jpn_vert+eng": "Japanese (H+V) + English",
     "kor+eng": "Korean + English",
-    "jpn+chi_tra": "Japanese + Trad. Chinese",
-    "jpn+chi_sim": "Japanese + Simp. Chinese",
-    "eng+chi_tra+chi_sim+jpn+kor": "All languages (EN / 繁中 / 简中 / 日本語 / 한국어)",
+    "jpn+jpn_vert+chi_tra+chi_tra_vert": "Japanese + Trad. Chinese (H+V)",
+    "jpn+jpn_vert+chi_sim+chi_sim_vert": "Japanese + Simp. Chinese (H+V)",
+    # Master key — must match ALL_OCR_LANGS exactly.
+    "eng+chi_tra+chi_tra_vert+chi_sim+chi_sim_vert+jpn+jpn_vert+kor": (
+        "All languages (EN / 繁中↕ / 简中↕ / 日本語↕ / 한국어)"
+    ),
 }
 
 _TRA_CHARS = "國學數與對這經區體發聯當會從點問機關個義處應實來將過還後給讓說時種為開黨對質開裡類"
@@ -315,7 +337,11 @@ _SIM_CHARS = "国学数与对这经区体发联当会从点问机关个义处应
 
 
 def detect_language_from_text(text: str) -> str:
-    """Heuristic language detection from extracted text (CLI / fallback use only)."""
+    """Heuristic language detection from extracted text (CLI / fallback use only).
+
+    BUGFIX 4: CJK return values now include the paired _vert variant so that
+    CLI --ocr-lang=auto covers both horizontal and vertical writing in one pass.
+    """
     if not text or len(text.strip()) < 5:
         return ALL_OCR_LANGS
 
@@ -353,12 +379,14 @@ def detect_language_from_text(text: str) -> str:
     if total == 0:
         return ALL_OCR_LANGS
 
+    # BUGFIX 4: always pair jpn with jpn_vert and chi_* with chi_*_vert so
+    # vertical-layout pages are covered without a separate detection pass.
     if jpn_kana > 0:
         if eng_count > total * 0.2:
-            return "jpn+eng"
+            return "jpn+jpn_vert+eng"
         if tra_indicators > sim_indicators:
-            return "jpn+chi_tra"
-        return "jpn"
+            return "jpn+jpn_vert+chi_tra+chi_tra_vert"
+        return "jpn+jpn_vert"
 
     if hangul_count > 0:
         if hangul_count / total > 0.3:
@@ -371,17 +399,17 @@ def detect_language_from_text(text: str) -> str:
 
     if cjk_count / total > 0.3:
         if tra_indicators > sim_indicators * 1.5:
-            return "chi_tra"
+            return "chi_tra+chi_tra_vert"
         if sim_indicators > tra_indicators * 1.5:
-            return "chi_sim"
-        return "chi_tra+chi_sim"
+            return "chi_sim+chi_sim_vert"
+        return "chi_tra+chi_tra_vert+chi_sim+chi_sim_vert"
 
     if cjk_count > 0:
         if tra_indicators > sim_indicators:
-            return "eng+chi_tra"
+            return "eng+chi_tra+chi_tra_vert"
         if sim_indicators > tra_indicators:
-            return "eng+chi_sim"
-        return "chi_tra+chi_sim+eng"
+            return "eng+chi_sim+chi_sim_vert"
+        return "chi_tra+chi_tra_vert+chi_sim+chi_sim_vert"
 
     return "eng"
 
@@ -389,7 +417,7 @@ def detect_language_from_text(text: str) -> str:
 def detect_language_from_pdf(pdf_path: Path) -> str:
     """Detect language from a PDF that already has a text layer (fast path).
 
-    For image-only PDFs this now returns ALL_OCR_LANGS immediately instead of
+    For image-only PDFs this returns ALL_OCR_LANGS immediately instead of
     running the expensive multi-pass Tesseract detection loop.
     """
     check = PDFCheckResult()
@@ -402,7 +430,7 @@ def detect_language_from_pdf(pdf_path: Path) -> str:
             return detected
 
     # Image-only PDF — skip the slow Tesseract detection loop entirely.
-    # Just return all languages; Tesseract handles multi-script pages correctly.
+    # Return all languages (including vert variants); Tesseract votes per block.
     return ALL_OCR_LANGS
 
 
@@ -422,7 +450,11 @@ def _check_tesseract_languages():
 
 
 def _filter_ocr_languages(requested: str) -> tuple[str, list[str]]:
-    """Filter requested OCR languages to only those installed in tesseract."""
+    """Filter requested OCR languages to only those installed in tesseract.
+
+    BUGFIX 3 (continued): vertical-variant codes are now in LANG_LABELS so
+    warning messages show human-readable names instead of raw Tesseract codes.
+    """
     warnings = []
     available = _check_tesseract_languages()
     if not available:
@@ -462,19 +494,20 @@ def _compress_page_ranges(pages: list[int]) -> str:
     return ",".join(ranges)
 
 
-# FIX 2: Optimal DPI constants
+# Optimal DPI constants
 #
 # 150 DPI is sufficient for clean Latin-script books.
 # 200 DPI is the sweet spot for CJK — fine strokes are legible without the
 # ~78 % extra pixel count that 250 DPI produces versus 200 DPI.
-# (pixel count scales as DPI², so 250→200 saves ~36 % compute per page.)
 _DPI_LATIN = 150
-_DPI_CJK   = 200   # was 250 — saves ~36 % compute, quality still excellent
+_DPI_CJK   = 200   # saves ~36 % compute vs 250 DPI; quality still excellent
 
-# FIX 3: Per-page Tesseract timeout (seconds).
+# Per-page Tesseract timeout (seconds).
 # Prevents a single corrupted or gigantic page from hanging the whole job.
-# ocrmypdf passes this to each Tesseract worker subprocess.
 _TESSERACT_TIMEOUT = 120
+
+# CJK language prefix detection — covers both horizontal and vertical packs.
+_CJK_LANG_PREFIXES = ("chi_", "jpn", "kor")
 
 
 def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
@@ -486,13 +519,18 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
 
     Key behaviours
     --------------
-    * language="auto"  →  always resolves to ALL_OCR_LANGS (no slow detection)
+    * language="auto"  →  always resolves to ALL_OCR_LANGS (no slow detection),
+                          which now includes vertical-writing packs for CJK.
     * skip_text=True   →  pages that already have a text layer are untouched,
-                          so existing links / paragraph structure are preserved
-    * optimize=1       →  lossless PDF compression; smaller output, no re-encoding
-    * tesseract_timeout→  hard per-page timeout; bad pages fail gracefully
+                          so existing links / paragraph structure are preserved.
+    * rotate_pages=False, deskew=False  →  BUGFIX 6: explicitly disable page
+                          rotation and deskew to prevent ocrmypdf from altering
+                          page geometry, which would corrupt link rect coordinates
+                          and paragraph flow on scanned books.
+    * optimize=1       →  lossless PDF compression; smaller output, no re-encoding.
+    * tesseract_timeout→  hard per-page timeout; bad pages fail gracefully.
     * _restore_pdf_metadata after OCR re-attaches any bookmarks/links that
-      ocrmypdf may have dropped
+      ocrmypdf may have dropped.
     """
     if input_pdf.resolve() == output_pdf.resolve():
         raise RuntimeError("input_pdf and output_pdf must be different files")
@@ -505,7 +543,7 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
             "Also ensure tesseract is installed with language packs."
         )
 
-    # FIX 1 (continued): "auto" always means ALL_OCR_LANGS — no detection pass.
+    # "auto" always means ALL_OCR_LANGS — no detection pass.
     if language == "auto":
         language = ALL_OCR_LANGS
         print(f"  OCR language: {LANG_LABELS[ALL_OCR_LANGS]} (all packs, no detection step)")
@@ -516,8 +554,7 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
     language, lang_warnings = _filter_ocr_languages(language)
     lang_label = LANG_LABELS.get(language, language)
 
-    # FIX 2 (continued): use reduced CJK DPI
-    _CJK_LANG_PREFIXES = ("chi_", "jpn", "kor")
+    # Use reduced CJK DPI (covers both horizontal and vertical packs).
     is_cjk = any(language.startswith(p) or f"+{p}" in language
                   for p in _CJK_LANG_PREFIXES)
     effective_dpi = _DPI_CJK if is_cjk else dpi
@@ -531,15 +568,20 @@ def run_ocr(input_pdf: Path, output_pdf: Path, language: str = "auto",
         # skip_text=True: pages with an existing text layer are left completely
         # untouched — their fonts, links, and paragraph structure are preserved.
         "skip_text": True,
+        # BUGFIX 6: never rotate or deskew pages — doing so would shift link
+        # annotation rects relative to page content, breaking hyperlinks and
+        # corrupting the logical paragraph flow that readers rely on.
+        "rotate_pages": False,
+        "deskew": False,
         # optimize=1: lossless PDF stream compression; reduces file size without
         # re-encoding images (optimize=2/3 would re-encode and could degrade quality).
         "optimize": 1,
         "image_dpi": effective_dpi,
         "progress_bar": False,
-        # FIX 2: reduced parallelism keeps memory/CPU pressure lower on small
+        # Reduced parallelism keeps memory/CPU pressure lower on small
         # cloud instances; 2 workers is safe even on a 1-vCPU container.
         "jobs": min(os.cpu_count() or 1, 2),
-        # FIX 3: per-page Tesseract timeout — bad pages fail gracefully instead
+        # Per-page Tesseract timeout — bad pages fail gracefully instead
         # of hanging the entire job and triggering a gunicorn worker timeout.
         "tesseract_timeout": _TESSERACT_TIMEOUT,
     }
@@ -809,7 +851,7 @@ def run_ocr_step(output_file, pages_image_only):
         ocr_result = run_ocr(
             input_pdf=output_file,
             output_pdf=ocr_output,
-            language="auto",       # resolves to ALL_OCR_LANGS immediately
+            language="auto",       # resolves to ALL_OCR_LANGS (incl. vert packs)
             dpi=_DPI_LATIN,        # run_ocr boosts to _DPI_CJK automatically
             pages_to_ocr=pages_image_only or None,
         )
@@ -903,8 +945,13 @@ def main():
     parser.add_argument("-o", "--output-dir", default="output", help="Output directory")
     parser.add_argument("--verify-only", metavar="FILE", help="Audit an existing PDF")
     parser.add_argument("--ocr-only", metavar="FILE", help="Run OCR on an existing PDF")
-    parser.add_argument("--ocr-lang", default="auto",
-                        help="OCR language: auto (all packs), eng, chi_tra, chi_sim, jpn, kor")
+    parser.add_argument(
+        "--ocr-lang", default="auto",
+        help=(
+            "OCR language: auto (all packs incl. vertical), eng, "
+            "chi_tra, chi_tra_vert, chi_sim, chi_sim_vert, jpn, jpn_vert, kor"
+        ),
+    )
     args = parser.parse_args()
 
     if args.verify_only:
