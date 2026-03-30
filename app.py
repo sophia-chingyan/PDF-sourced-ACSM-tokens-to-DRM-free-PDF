@@ -331,9 +331,23 @@ def job_status(job_id):
         pdf_path = job.get("ocr_pdf_path", "")
         pages_str = job.get("ocr_pages", "")
         page_count = len(pages_str.split(",")) if pages_str else 0
+
+        # Compute PDF filename and size so the frontend can offer an
+        # immediate download of the already-saved image-only PDF.
+        pdf_filename = Path(pdf_path).name if pdf_path else ""
+        pdf_size = ""
+        if pdf_path:
+            try:
+                size_mb = Path(pdf_path).stat().st_size / (1024 * 1024)
+                pdf_size = f"{size_mb:.1f} MB"
+            except Exception:
+                pass
+
         resp_data["ocr_info"] = {
-            "filename": Path(pdf_path).name if pdf_path else "",
+            "filename": pdf_filename,
             "page_count": page_count,
+            "pdf_filename": pdf_filename,
+            "pdf_size": pdf_size,
         }
 
     return jsonify(resp_data)
