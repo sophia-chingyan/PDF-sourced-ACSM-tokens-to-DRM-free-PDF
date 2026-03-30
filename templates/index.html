@@ -223,6 +223,48 @@
         }
         .btn-ocr-no:hover { border-color: #90a4ae; color: #37474f; }
 
+        /* Saved PDF banner shown on the OCR choice screen */
+        .ocr-saved-banner {
+            background: #e8f5e9;
+            border: 1px solid #a5d6a7;
+            border-radius: 8px;
+            padding: 0.85rem 1.1rem;
+            margin-bottom: 1.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .ocr-saved-banner .saved-info {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.92rem;
+            color: #2e7d32;
+            font-weight: 600;
+        }
+        .ocr-saved-banner .saved-detail {
+            font-size: 0.85rem;
+            color: #546e7a;
+            font-weight: 400;
+        }
+        .btn-dl-saved {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.45rem 1rem;
+            border-radius: 8px;
+            font-size: 0.88rem;
+            font-weight: 600;
+            text-decoration: none;
+            color: #fff;
+            background: #388e3c;
+            transition: background 0.2s;
+            white-space: nowrap;
+        }
+        .btn-dl-saved:hover { background: #2e7d32; color: #fff; }
+
         .done-title { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.4rem; }
         .done-title h3 { margin: 0; color: #2e7d32; }
         .done-subtitle { color: #546e7a; margin-bottom: 1rem; font-size: 0.95rem; }
@@ -343,8 +385,18 @@
         <section id="ocr-choice-section">
             <h3>PDF Contains Image-Only Pages</h3>
             <p id="ocr-choice-desc"></p>
+
+            <!-- Already-saved PDF download banner -->
+            <div class="ocr-saved-banner" id="ocr-saved-banner" style="display:none">
+                <div>
+                    <div class="saved-info">✅ Image-only PDF saved to library</div>
+                    <div class="saved-detail" id="ocr-saved-detail"></div>
+                </div>
+                <a id="ocr-saved-dl" href="#" class="btn-dl-saved" download>⬇ Download PDF</a>
+            </div>
+
             <p style="color:#546e7a; font-size:0.9rem; margin-bottom:1.25rem;">
-                Either way, the <strong>original image-only PDF is already saved</strong> and available to download.<br>
+                The <strong>original image-only PDF is already saved</strong> and available to download above.<br>
                 <strong>Run OCR</strong> also creates a second PDF with an invisible text layer for searching and copying.<br>
                 <strong>Skip OCR</strong> if you only need the image PDF.
             </p>
@@ -353,7 +405,7 @@
                     <span style="font-size:1.1rem">&#128269;</span> Run OCR (also save searchable PDF)
                 </button>
                 <button id="btn-skip-ocr" class="btn-ocr-no" onclick="ocrDecision('skip')">
-                    <span style="font-size:1.1rem">&#128230;</span> Skip OCR — just download image PDF
+                    <span style="font-size:1.1rem">&#128230;</span> Skip OCR — just keep image PDF
                 </button>
             </div>
         </section>
@@ -428,6 +480,9 @@
         const convertingName   = document.getElementById('converting-name');
         const ocrChoiceSection = document.getElementById('ocr-choice-section');
         const ocrChoiceDesc    = document.getElementById('ocr-choice-desc');
+        const ocrSavedBanner   = document.getElementById('ocr-saved-banner');
+        const ocrSavedDetail   = document.getElementById('ocr-saved-detail');
+        const ocrSavedDl       = document.getElementById('ocr-saved-dl');
         const doneSection      = document.getElementById('done-section');
         const doneSubtitle     = document.getElementById('done-subtitle');
         const doneIcon         = document.getElementById('done-icon');
@@ -469,6 +524,7 @@
             stepsDiv.innerHTML = '';
             doneActions.innerHTML = '';
             linkWarningBox.style.display = 'none';
+            ocrSavedBanner.style.display = 'none';
             Object.keys(stepDivs).forEach(k => delete stepDivs[k]);
             lastRenderedSteps = 0;
             hadWarning = false;
@@ -565,6 +621,16 @@
                         const info = data.ocr_info || {};
                         ocrChoiceDesc.textContent =
                             info.page_count + ' page(s) are image-only and have no selectable text.';
+
+                        // Show the already-saved PDF download banner
+                        if (info.pdf_filename) {
+                            ocrSavedDetail.textContent = info.pdf_filename + (info.pdf_size ? ' (' + info.pdf_size + ')' : '');
+                            ocrSavedDl.href = '/download/' + encodeURIComponent(info.pdf_filename);
+                            ocrSavedBanner.style.display = 'flex';
+                        } else {
+                            ocrSavedBanner.style.display = 'none';
+                        }
+
                         progressSection.style.display = 'none';
                         ocrChoiceSection.style.display = 'block';
                         return;
