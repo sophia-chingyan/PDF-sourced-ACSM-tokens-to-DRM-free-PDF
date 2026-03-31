@@ -682,7 +682,7 @@
 
     /* ── Init ──
        BUG FIX: When the library is empty, #view-grid / #view-list / #btn-grid /
-       #btn-list do not exist in the DOM (the {% else %} block is skipped).
+       #btn-list do not exist in the DOM (the non-empty template branch is skipped).
        All functions now guard against null elements before accessing .style. */
     setView(currentView, true);
     updateVisibleCount();
