@@ -681,9 +681,9 @@
     let deleteTarget  = null;
 
     /* ── Init ──
-       BUG FIX: When the library is empty, #view-grid / #view-list / #btn-grid /
-       #btn-list do not exist in the DOM (the {% else %} block is skipped).
-       All functions now guard against null elements before accessing .style. */
+       When the library is empty, #view-grid / #view-list / #btn-grid /
+       #btn-list do not exist in the DOM (the empty-state branch is rendered instead).
+       All functions guard against null elements before accessing .style. */
     setView(currentView, true);
     updateVisibleCount();
 
