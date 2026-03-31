@@ -681,8 +681,8 @@
     let deleteTarget  = null;
 
     /* ── Init ──
-       BUG FIX: When the library is empty, #view-grid / #view-list / #btn-grid /
-       #btn-list do not exist in the DOM (the {% else %} block is skipped).
+       When the library is empty, the conditional content block is skipped and
+       #view-grid / #view-list / #btn-grid / #btn-list do not exist in the DOM.
        All functions now guard against null elements before accessing .style. */
     setView(currentView, true);
     updateVisibleCount();
