@@ -3,3 +3,5 @@ gunicorn
 pypdf
 PyMuPDF
 ocrmypdf
+authlib
+requests

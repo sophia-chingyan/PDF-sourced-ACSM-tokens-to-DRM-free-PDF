@@ -10,9 +10,17 @@
             "required": true,
             "generate": "SECRET"
         },
-        "APP_PASSWORD": {
-            "description": "Optional password to protect the web interface. Leave empty for no auth.",
-            "required": false
+        "GOOGLE_CLIENT_ID": {
+            "description": "Google OAuth2 Client ID. Get this from Google Cloud Console → APIs & Services → Credentials.",
+            "required": true
+        },
+        "GOOGLE_CLIENT_SECRET": {
+            "description": "Google OAuth2 Client Secret. Get this from Google Cloud Console → APIs & Services → Credentials.",
+            "required": true
+        },
+        "ALLOWED_EMAIL": {
+            "description": "Your Google account email address. Only this email will be allowed to log in (e.g. you@gmail.com).",
+            "required": true
         }
     },
     "volumes": [
