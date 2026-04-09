@@ -95,7 +95,14 @@ def login():
 
 @app.route("/login/google")
 def login_google():
-    redirect_uri = url_for("auth_callback", _external=True)
+    # Force the correct redirect URI explicitly — do not rely on url_for()
+    # which can produce http:// behind a reverse proxy like Zeabur.
+    base = os.environ.get("APP_BASE_URL", "").rstrip("/")
+    if base:
+        redirect_uri = f"{base}/auth/google/callback"
+    else:
+        redirect_uri = url_for("auth_callback", _external=True, _scheme="https")
+    print(f"[DEBUG] OAuth redirect_uri = {redirect_uri}", flush=True)
     return oauth.google.authorize_redirect(redirect_uri)
 
 
