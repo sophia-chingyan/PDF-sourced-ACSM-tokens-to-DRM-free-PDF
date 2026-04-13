@@ -225,7 +225,6 @@
             flex-shrink: 0;
         }
         .badge-pdf  { background: #fce4ec; color: #c62828; }
-        .badge-ocr  { background: #e3f2fd; color: #1565c0; }
         .file-size  { color: var(--muted); margin-left: auto; flex-shrink: 0; }
 
         /* Card actions footer */
@@ -252,10 +251,6 @@
             white-space: nowrap;
         }
         .btn-dl-sm:hover { background: var(--accent-hover); color: #fff; }
-        .btn-dl-ocr {
-            background: #1565c0;
-        }
-        .btn-dl-ocr:hover { background: #0d47a1; }
         .btn-delete-sm {
             display: inline-flex;
             align-items: center;
@@ -495,10 +490,6 @@
             <span class="stat-num" id="stat-files">{{ total_files }}</span>
             <span class="stat-label">Files</span>
         </div>
-        <div class="stat-pill">
-            <span class="stat-num" id="stat-ocr">{{ ocr_count }}</span>
-            <span class="stat-label">With OCR</span>
-        </div>
     </div>
 
     {% if not books %}
@@ -574,11 +565,7 @@
                     <div class="card-files">
                         {% for f in book.files %}
                         <div class="card-file-row">
-                            {% if f.ocr %}
-                            <span class="badge badge-ocr">PDF+OCR</span>
-                            {% else %}
                             <span class="badge badge-pdf">PDF</span>
-                            {% endif %}
                             <span class="file-size">{{ f.size }}</span>
                         </div>
                         {% endfor %}
@@ -589,9 +576,9 @@
                 {% for f in book.files %}
                 <a
                     href="/download/{{ f.name }}"
-                    class="btn-dl-sm {% if f.ocr %}btn-dl-ocr{% endif %}"
+                    class="btn-dl-sm"
                     download
-                >⬇ {% if f.ocr %}Searchable{% else %}PDF{% endif %}</a>
+                >⬇ PDF</a>
                 {% endfor %}
                 <button
                     class="btn-delete-sm"
@@ -629,21 +616,17 @@
             <div class="list-title">{{ book.stem }}</div>
             <div class="list-badges">
                 {% for f in book.files %}
-                {% if f.ocr %}
-                <span class="badge badge-ocr">PDF+OCR</span>
-                {% else %}
                 <span class="badge badge-pdf">PDF</span>
-                {% endif %}
                 {% endfor %}
             </div>
             <div class="list-files">
                 {% for f in book.files %}
                 <a
                     href="/download/{{ f.name }}"
-                    class="btn-dl-sm {% if f.ocr %}btn-dl-ocr{% endif %}"
+                    class="btn-dl-sm"
                     download
                     title="{{ f.size }}"
-                >⬇ {% if f.ocr %}Searchable{% else %}PDF{% endif %}</a>
+                >⬇ PDF</a>
                 {% endfor %}
             </div>
             <button
@@ -861,13 +844,10 @@
     function updateStats() {
         const books = document.querySelectorAll('#view-grid .book-card').length;
         const files = document.querySelectorAll('#view-grid .btn-dl-sm').length;
-        const withOcr = document.querySelectorAll('#view-grid .badge-ocr').length;
         const s = document.getElementById('stat-books');
         const f = document.getElementById('stat-files');
-        const o = document.getElementById('stat-ocr');
         if (s) s.textContent = books;
         if (f) f.textContent = files;
-        if (o) o.textContent = withOcr;
     }
 
     function showEmptyState() {

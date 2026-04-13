@@ -14,7 +14,7 @@ from flask import (
 )
 from authlib.integrations.flask_client import OAuth
 
-from converter import convert_pipeline, run_ocr_step
+from converter import convert_pipeline
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24).hex())
@@ -53,7 +53,7 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 COVER_DIR.mkdir(exist_ok=True)
 
-TOTAL_STEPS = 7
+TOTAL_STEPS = 6
 
 STEP_LABELS = {
     1: "Checking tools...",
@@ -62,7 +62,6 @@ STEP_LABELS = {
     4: "Downloading ebook...",
     5: "Removing DRM...",
     6: "Verifying readability...",
-    7: "Running OCR (if needed)...",
 }
 
 active_jobs = {}
@@ -170,38 +169,29 @@ def extract_pdf_cover(pdf_path):
 
 def get_books():
     if not OUTPUT_DIR.exists():
-        return [], 0, 0
+        return [], 0
     books = OrderedDict()
     total_files = 0
-    ocr_count   = 0
     for f in sorted(OUTPUT_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
         if f.suffix != ".pdf":
             continue
-        stem      = f.stem
-        base_stem = stem[:-4] if stem.endswith("_ocr") else stem
-        if not base_stem:
+        stem = f.stem
+        if not stem:
             continue
-        if base_stem not in books:
-            books[base_stem] = {"stem": base_stem, "files": [], "cover": None, "has_ocr": False}
+        if stem not in books:
+            books[stem] = {"stem": stem, "files": [], "cover": None}
         size_mb = f.stat().st_size / (1024 * 1024)
-        is_ocr  = stem.endswith("_ocr")
-        books[base_stem]["files"].append({
+        books[stem]["files"].append({
             "name": f.name,
             "size": f"{size_mb:.1f} MB",
             "ext":  "PDF",
-            "ocr":  is_ocr,
         })
         total_files += 1
-        if is_ocr:
-            books[base_stem]["has_ocr"] = True
-            ocr_count += 1
-        if not books[base_stem]["cover"]:
+        if not books[stem]["cover"]:
             cover = extract_pdf_cover(f)
             if cover:
-                books[base_stem]["cover"] = cover
-    for book in books.values():
-        book["files"].sort(key=lambda x: (not x["ocr"], x["name"]))
-    return list(books.values()), total_files, ocr_count
+                books[stem]["cover"] = cover
+    return list(books.values()), total_files
 
 
 def _prune_old_jobs():
@@ -234,23 +224,10 @@ def run_conversion_job(job_id, acsm_path, output_dir):
                 job["steps"].append({"step": "done", "message": message})
                 job["status"]       = "done"
                 job["done_message"] = message
-            elif step == "ocr_prompt":
-                parts = message.split("|")
-                job["ocr_pdf_path"] = parts[0]
-                job["ocr_pages"]    = parts[1]
-                job["status"]       = "pending_ocr"
-                job["current_step"] = 7
-                job["current_label"] = "Waiting for your decision..."
-                return
             else:
                 step_num   = int(step)
                 is_warning = (
-                    (step_num == 6 and "broken" in message.lower())
-                    or (step_num == 7 and (
-                        "failed" in message.lower()
-                        or "could not" in message.lower()
-                        or message.lower().startswith("warning:")
-                    ))
+                    step_num == 6 and "broken" in message.lower()
                 )
                 job["steps"].append({"step": step_num, "message": message, "warning": is_warning})
                 next_step = step_num + 1
@@ -267,47 +244,12 @@ def run_conversion_job(job_id, acsm_path, output_dir):
         job["error"]  = f"Unexpected error: {e}"
 
 
-def run_ocr_job(job_id):
-    import traceback
-
-    with _active_jobs_lock:
-        job = active_jobs[job_id]
-
-    pdf_path = job["ocr_pdf_path"]
-    pages    = [int(p) for p in job["ocr_pages"].split(",") if p.strip()]
-
-    print(f"[DEBUG] Job {job_id} OCR started: pdf={pdf_path}, pages={len(pages)}", flush=True)
-    try:
-        job["status"]        = "running"
-        job["current_step"]  = 7
-        job["current_label"] = STEP_LABELS[7]
-
-        for step, message in run_ocr_step(pdf_path, pages):
-            print(f"[DEBUG] Job {job_id} OCR step={step} message={message}", flush=True)
-            if step == "done":
-                job["steps"].append({"step": "done", "message": message})
-                job["status"]       = "done"
-                job["done_message"] = message
-            else:
-                step_num   = int(step)
-                is_warning = (
-                    "failed" in message.lower()
-                    or "could not" in message.lower()
-                    or message.lower().startswith("warning:")
-                )
-                job["steps"].append({"step": step_num, "message": message, "warning": is_warning})
-    except Exception as e:
-        print(f"[DEBUG] Job {job_id} OCR Exception: {e}\n{traceback.format_exc()}", flush=True)
-        job["status"] = "error"
-        job["error"]  = f"OCR error: {e}"
-
-
 # ── Routes ─────────────────────────────────────────────────────────────────
 
 @app.route("/")
 @login_required
 def index():
-    books, total_files, ocr_count = get_books()
+    books, total_files = get_books()
     resp = make_response(render_template("index.html", books=books))
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
@@ -316,12 +258,11 @@ def index():
 @app.route("/library")
 @login_required
 def library():
-    books, total_files, ocr_count = get_books()
+    books, total_files = get_books()
     resp = make_response(render_template(
         "library.html",
         books=books,
         total_files=total_files,
-        ocr_count=ocr_count,
     ))
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
@@ -361,8 +302,6 @@ def start_convert(filename):
             "error":        None,
             "done_message": None,
             "start_time":   time.time(),
-            "ocr_pdf_path": None,
-            "ocr_pages":    None,
         }
 
     t = threading.Thread(
@@ -393,45 +332,7 @@ def job_status(job_id):
         "elapsed":       elapsed,
     }
 
-    if job["status"] == "pending_ocr":
-        pdf_path   = job.get("ocr_pdf_path", "")
-        pages_str  = job.get("ocr_pages", "")
-        page_count = len(pages_str.split(",")) if pages_str else 0
-        resp_data["ocr_info"] = {
-            "filename":   Path(pdf_path).name if pdf_path else "",
-            "page_count": page_count,
-        }
-
     return jsonify(resp_data)
-
-
-@app.route("/ocr-decision/<job_id>", methods=["POST"])
-@login_required
-def ocr_decision(job_id):
-    with _active_jobs_lock:
-        if job_id not in active_jobs:
-            return jsonify({"error": "Job not found"}), 404
-        job = active_jobs[job_id]
-
-    if job["status"] != "pending_ocr":
-        return jsonify({"error": "Job is not waiting for OCR decision"}), 400
-
-    data   = request.get_json(silent=True) or {}
-    choice = data.get("choice", "skip")
-
-    if choice == "ocr":
-        t = threading.Thread(target=run_ocr_job, args=(job_id,), daemon=True)
-        t.start()
-        return jsonify({"status": "ocr_started"})
-    else:
-        pdf_path = Path(job.get("ocr_pdf_path", ""))
-        size_mb  = pdf_path.stat().st_size / (1024 * 1024) if pdf_path.exists() else 0
-        done_msg = f"{pdf_path.name}|{size_mb:.1f} MB"
-        job["steps"].append({"step": 7, "message": "OCR skipped by user -- PDF saved as image-only.", "warning": False})
-        job["steps"].append({"step": "done", "message": done_msg})
-        job["status"]       = "done"
-        job["done_message"] = done_msg
-        return jsonify({"status": "skipped", "done_message": done_msg})
 
 
 @app.route("/download/<filename>")
@@ -450,16 +351,14 @@ def delete_book(stem):
     stem = Path(stem).stem
     if not stem:
         return jsonify({"error": "Invalid stem"}), 400
-    paired_stems = {stem, f"{stem}_ocr"}
     deleted = []
     for f in list(OUTPUT_DIR.iterdir()):
-        if f.stem in paired_stems and f.suffix == ".pdf":
+        if f.stem == stem and f.suffix == ".pdf":
             f.unlink(missing_ok=True)
             deleted.append(f.name)
     for d in (UPLOAD_DIR, COVER_DIR):
         for f in d.iterdir():
-            f_base = f.stem[:-4] if f.stem.endswith("_ocr") else f.stem
-            if f_base == stem:
+            if f.stem == stem:
                 f.unlink(missing_ok=True)
     return jsonify({"deleted": deleted})
 

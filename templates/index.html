@@ -119,7 +119,6 @@
             white-space: nowrap;
         }
         .file-badge-pdf   { background: #fce4ec; color: #c62828; }
-        .file-badge-ocr   { background: #e3f2fd; color: #1565c0; }
         .file-size { color: #78909c; font-size: 0.85rem; }
         .btn-dl {
             display: inline-block;
@@ -186,84 +185,14 @@
             margin-left: 0.5rem;
         }
 
-        #confirm-section, #progress-section, #done-section, #ocr-choice-section { display: none; }
-        #confirm-section, #progress-section, #done-section, #ocr-choice-section {
+        #confirm-section, #progress-section, #done-section { display: none; }
+        #confirm-section, #progress-section, #done-section {
             background: #fff;
             border-radius: 12px;
             padding: 1.5rem;
             box-shadow: 0 2px 8px rgba(0,0,0,0.08);
             margin-bottom: 2rem;
         }
-
-        .ocr-choice-buttons {
-            display: flex;
-            gap: 1rem;
-            flex-wrap: wrap;
-        }
-        .btn-ocr-yes, .btn-ocr-no {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.75rem 1.5rem;
-            border-radius: 8px;
-            font-size: 0.95rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-            border: none;
-            flex: 1;
-            justify-content: center;
-        }
-        .btn-ocr-yes { background: var(--accent); color: #fff; }
-        .btn-ocr-yes:hover { background: var(--accent-hover); }
-        .btn-ocr-no {
-            background: transparent;
-            color: #546e7a;
-            border: 1.5px solid #cfd8dc;
-        }
-        .btn-ocr-no:hover { border-color: #90a4ae; color: #37474f; }
-
-        /* Saved PDF banner shown on the OCR choice screen */
-        .ocr-saved-banner {
-            background: #e8f5e9;
-            border: 1px solid #a5d6a7;
-            border-radius: 8px;
-            padding: 0.85rem 1.1rem;
-            margin-bottom: 1.25rem;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 1rem;
-            flex-wrap: wrap;
-        }
-        .ocr-saved-banner .saved-info {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            font-size: 0.92rem;
-            color: #2e7d32;
-            font-weight: 600;
-        }
-        .ocr-saved-banner .saved-detail {
-            font-size: 0.85rem;
-            color: #546e7a;
-            font-weight: 400;
-        }
-        .btn-dl-saved {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.4rem;
-            padding: 0.45rem 1rem;
-            border-radius: 8px;
-            font-size: 0.88rem;
-            font-weight: 600;
-            text-decoration: none;
-            color: #fff;
-            background: #388e3c;
-            transition: background 0.2s;
-            white-space: nowrap;
-        }
-        .btn-dl-saved:hover { background: #2e7d32; color: #fff; }
 
         .done-title { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.4rem; }
         .done-title h3 { margin: 0; color: #2e7d32; }
@@ -297,23 +226,6 @@
         }
         .btn-dl-primary:hover { background: #2e7d32; color: #fff; }
 
-        .btn-dl-secondary {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.6rem 1.2rem;
-            border-radius: 8px;
-            font-size: 0.88rem;
-            font-weight: 500;
-            text-decoration: none;
-            color: #1565c0;
-            background: #e3f2fd;
-            border: 1px solid #90caf9;
-            transition: all 0.2s;
-            white-space: nowrap;
-        }
-        .btn-dl-secondary:hover { background: #bbdefb; color: #0d47a1; }
-
         .btn-another {
             display: inline-flex;
             align-items: center;
@@ -343,7 +255,7 @@
             <div class="hero-inner">
                 <div class="hero-title">
                     <h1>ACSM Converter</h1>
-                    <p>Convert PDF-sourced ACSM tokens to DRM-free PDF — with automatic OCR (EN / 繁中 / 简中 / 日本語 / 한국어)</p>
+                    <p>Convert PDF-sourced ACSM tokens to DRM-free PDF</p>
                 </div>
                 <nav class="hero-nav">
                     <a href="/library">📚 My Library</a>
@@ -377,37 +289,8 @@
         <!-- Progress -->
         <section id="progress-section">
             <h3>Converting: <span id="converting-name"></span></h3>
-            <progress id="progress-bar" value="0" max="7" style="margin-bottom:1rem"></progress>
+            <progress id="progress-bar" value="0" max="6" style="margin-bottom:1rem"></progress>
             <div id="steps"></div>
-        </section>
-
-        <!-- OCR Choice -->
-        <section id="ocr-choice-section">
-            <h3>PDF Contains Image-Only Pages</h3>
-            <p id="ocr-choice-desc"></p>
-
-            <!-- Already-saved PDF download banner -->
-            <div class="ocr-saved-banner" id="ocr-saved-banner" style="display:none">
-                <div>
-                    <div class="saved-info">✅ Image-only PDF saved to library</div>
-                    <div class="saved-detail" id="ocr-saved-detail"></div>
-                </div>
-                <a id="ocr-saved-dl" href="#" class="btn-dl-saved" download>⬇ Download PDF</a>
-            </div>
-
-            <p style="color:#546e7a; font-size:0.9rem; margin-bottom:1.25rem;">
-                The <strong>original image-only PDF is already saved</strong> and available to download above.<br>
-                <strong>Run OCR</strong> also creates a second PDF with an invisible text layer for searching and copying.<br>
-                <strong>Skip OCR</strong> if you only need the image PDF.
-            </p>
-            <div class="ocr-choice-buttons">
-                <button id="btn-run-ocr" class="btn-ocr-yes" onclick="ocrDecision('ocr')">
-                    <span style="font-size:1.1rem">&#128269;</span> Run OCR (also save searchable PDF)
-                </button>
-                <button id="btn-skip-ocr" class="btn-ocr-no" onclick="ocrDecision('skip')">
-                    <span style="font-size:1.1rem">&#128230;</span> Skip OCR — just keep image PDF
-                </button>
-            </div>
         </section>
 
         <!-- Done -->
@@ -447,11 +330,7 @@
                         <div class="book-files">
                             {% for f in book.files %}
                             <div class="book-file">
-                                {% if f.ocr %}
-                                <span class="file-badge file-badge-ocr">PDF+OCR</span>
-                                {% else %}
                                 <span class="file-badge file-badge-pdf">PDF</span>
-                                {% endif %}
                                 <span class="file-size">{{ f.size }}</span>
                                 <a href="/download/{{ f.name }}" class="btn-dl">Download</a>
                             </div>
@@ -466,7 +345,7 @@
     </main>
 
     <script>
-        const TOTAL_STEPS = 7;
+        const TOTAL_STEPS = 6;
 
         const fileInput        = document.getElementById('file-input');
         const uploadSection    = document.getElementById('upload-section');
@@ -478,11 +357,6 @@
         const stepsDiv         = document.getElementById('steps');
         const progressBar      = document.getElementById('progress-bar');
         const convertingName   = document.getElementById('converting-name');
-        const ocrChoiceSection = document.getElementById('ocr-choice-section');
-        const ocrChoiceDesc    = document.getElementById('ocr-choice-desc');
-        const ocrSavedBanner   = document.getElementById('ocr-saved-banner');
-        const ocrSavedDetail   = document.getElementById('ocr-saved-detail');
-        const ocrSavedDl       = document.getElementById('ocr-saved-dl');
         const doneSection      = document.getElementById('done-section');
         const doneSubtitle     = document.getElementById('done-subtitle');
         const doneIcon         = document.getElementById('done-icon');
@@ -516,7 +390,6 @@
             doneSection.style.display = 'none';
             progressSection.style.display = 'none';
             confirmSection.style.display = 'none';
-            ocrChoiceSection.style.display = 'none';
             uploadSection.style.display = 'block';
             pendingFilename = null;
             activeJobId = null;
@@ -524,7 +397,6 @@
             stepsDiv.innerHTML = '';
             doneActions.innerHTML = '';
             linkWarningBox.style.display = 'none';
-            ocrSavedBanner.style.display = 'none';
             Object.keys(stepDivs).forEach(k => delete stepDivs[k]);
             lastRenderedSteps = 0;
             hadWarning = false;
@@ -612,30 +484,6 @@
                         }
                     }
 
-                    if (data.status === 'pending_ocr') {
-                        finalizeActiveSpinners();
-                        stopElapsedTimer();
-                        progressBar.value = 6;
-                        clearInterval(poller);
-
-                        const info = data.ocr_info || {};
-                        ocrChoiceDesc.textContent =
-                            info.page_count + ' page(s) are image-only and have no selectable text.';
-
-                        // Show the already-saved PDF download banner
-                        if (info.pdf_filename) {
-                            ocrSavedDetail.textContent = info.pdf_filename + (info.pdf_size ? ' (' + info.pdf_size + ')' : '');
-                            ocrSavedDl.href = '/download/' + encodeURIComponent(info.pdf_filename);
-                            ocrSavedBanner.style.display = 'flex';
-                        } else {
-                            ocrSavedBanner.style.display = 'none';
-                        }
-
-                        progressSection.style.display = 'none';
-                        ocrChoiceSection.style.display = 'block';
-                        return;
-                    }
-
                     if (data.status === 'error') {
                         Object.values(stepDivs).forEach(d => {
                             if (d.dataset.status === 'active') {
@@ -653,52 +501,6 @@
                     // network hiccup — keep polling
                 }
             }, 2000);
-        }
-
-        async function ocrDecision(choice) {
-            if (!activeJobId) return;
-
-            document.getElementById('btn-run-ocr').disabled = true;
-            document.getElementById('btn-skip-ocr').disabled = true;
-
-            let responseData;
-            try {
-                const resp = await fetch('/ocr-decision/' + encodeURIComponent(activeJobId), {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ choice: choice }),
-                });
-                responseData = await resp.json();
-                if (responseData.error) {
-                    alert(responseData.error);
-                    document.getElementById('btn-run-ocr').disabled = false;
-                    document.getElementById('btn-skip-ocr').disabled = false;
-                    return;
-                }
-            } catch (err) {
-                alert('Request failed: ' + err.message);
-                document.getElementById('btn-run-ocr').disabled = false;
-                document.getElementById('btn-skip-ocr').disabled = false;
-                return;
-            }
-
-            document.getElementById('btn-run-ocr').disabled = false;
-            document.getElementById('btn-skip-ocr').disabled = false;
-
-            ocrChoiceSection.style.display = 'none';
-
-            if (choice === 'ocr') {
-                progressSection.style.display = 'block';
-                showActiveStep(7, 'Running OCR...');
-                startPolling(activeJobId);
-            } else {
-                if (responseData && responseData.done_message) {
-                    showDone(responseData.done_message);
-                } else {
-                    progressSection.style.display = 'block';
-                    startPolling(activeJobId);
-                }
-            }
         }
 
         function renderCompletedStep(s) {
@@ -745,35 +547,19 @@
             const parts = message.split('|');
             const primaryFilename = parts[0];
             const primarySize    = parts[1] || '';
-            const secondaryFilename = parts[2] || '';
-            const secondarySize     = parts[3] || '';
 
             setTimeout(() => {
                 progressSection.style.display = 'none';
 
-                if (secondaryFilename) {
-                    doneSubtitle.textContent =
-                        'Searchable PDF: ' + primaryFilename + ' (' + primarySize + ')  •  ' +
-                        'Image PDF: ' + secondaryFilename + ' (' + secondarySize + ')';
-                } else {
-                    doneSubtitle.textContent = primaryFilename + ' (' + primarySize + ')';
-                }
+                doneSubtitle.textContent = primaryFilename + ' (' + primarySize + ')';
 
                 doneActions.innerHTML = '';
 
                 const btnPrimary = document.createElement('a');
                 btnPrimary.className = 'btn-dl-primary';
                 btnPrimary.href = '/download/' + encodeURIComponent(primaryFilename);
-                btnPrimary.textContent = '⬇ Download ' + (secondaryFilename ? 'Searchable PDF' : 'PDF');
+                btnPrimary.textContent = '⬇ Download PDF';
                 doneActions.appendChild(btnPrimary);
-
-                if (secondaryFilename) {
-                    const btnSecondary = document.createElement('a');
-                    btnSecondary.className = 'btn-dl-secondary';
-                    btnSecondary.href = '/download/' + encodeURIComponent(secondaryFilename);
-                    btnSecondary.textContent = '⬇ Image-only PDF';
-                    doneActions.appendChild(btnSecondary);
-                }
 
                 const btnAnother = document.createElement('button');
                 btnAnother.className = 'btn-another';
